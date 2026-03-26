@@ -39,9 +39,9 @@ $$\hat{y}_i = w_1 x_{i1} + w_2 x_{i2} + \cdots + w_p x_{ip} + b$$
 
 In matrix form — after prepending a column of 1s to absorb the bias $b$:
 
-$$\hat{\mathbf{y}} = \mathbf{X}\boldsymbol{\hat\beta}, \qquad \mathbf{X} \in \mathbb{R}^{n \times (p+1)},\; \boldsymbol{\hat\beta} \in \mathbb{R}^{p+1}$$
+$$\hat{\mathbf{y}} = \mathbf{X}\boldsymbol{\hat\beta}, \qquad \mathbf{X} \in \mathbb{R}^{n \times (p+1)},\quad \boldsymbol{\hat\beta} \in \mathbb{R}^{p+1}$$
 
-where $\boldsymbol{\hat\beta} = [b,\; w_1,\; w_2,\; \ldots,\; w_p]^T$.
+where $\boldsymbol{\hat\beta} = [b,\ w_1,\ w_2,\ \ldots,\ w_p]^T$.
 
 ---
 
@@ -49,7 +49,7 @@ where $\boldsymbol{\hat\beta} = [b,\; w_1,\; w_2,\; \ldots,\; w_p]^T$.
 
 We want to minimise the **Mean Squared Error**:
 
-$$\mathcal{L}(\boldsymbol\beta) = \frac{1}{n}\|\mathbf{y} - \mathbf{X}\boldsymbol\beta\|^2 = \frac{1}{n}\sum_{i=1}^n (y_i - \hat y_i)^2$$
+$$\mathcal{L}(\boldsymbol\beta) = \frac{1}{n}\|\mathbf{y} - \mathbf{X}\boldsymbol\beta\|^2 = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
 
 The loss surface is a **convex bowl** — it has exactly one global minimum with no local minima to get trapped in.
 
@@ -107,7 +107,7 @@ $(\mathbf{X}^T\mathbf{X})^{-1}$ exists **if and only if** $\mathbf{X}$ has full 
 
 $$\boldsymbol{\hat\beta}_{\text{ridge}} = (\mathbf{X}^T\mathbf{X} + \lambda\mathbf{I})^{-1}\mathbf{X}^T\mathbf{y}$$
 
-Adding $\lambda\mathbf{I}$ guarantees invertibility and shrinks coefficients.
+Adding $\lambda\mathbf{I}$ guarantees invertibility and shrinks coefficients toward zero.
 
 ---
 
@@ -140,37 +140,31 @@ In the multivariate case ($p > 1$), the same Normal Equation applies without mod
 
 ```python
 import numpy as np
-from linear_regression import LinearRegression   # your module
+from linear_regression import LinearRegression
 
-# ── Prepare data ──────────────────────────────────────────────────────────────
+# Prepare data
 X_train = np.array([[1], [2], [3], [4], [5]], dtype=float)
 y_train = np.array([2.1, 3.9, 6.2, 7.8, 10.1])
 
-# ── Fit ───────────────────────────────────────────────────────────────────────
+# Fit
 model = LinearRegression()
 model.fit(X_train, y_train)
 
 print("Intercept (b) :", model.intercept_)   # scalar
 print("Weights   (w) :", model.coef_)        # array, shape (n_features,)
 
-# ── Predict ───────────────────────────────────────────────────────────────────
+# Predict
 X_test = np.array([[6], [7], [8]], dtype=float)
 y_pred = model.predict(X_test)
 print("Predictions   :", y_pred)
 
-# ── Evaluate ──────────────────────────────────────────────────────────────────
-y_hat_train = model.predict(X_train)
-mse  = np.mean((y_train - y_hat_train) ** 2)
-ss_res = np.sum((y_train - y_hat_train) ** 2)
-ss_tot = np.sum((y_train - y_train.mean()) ** 2)
-r2   = 1 - ss_res / ss_tot
-print(f"MSE = {mse:.4f}   R² = {r2:.4f}")
+# Evaluate
+print(f"R²  = {model.score(X_test, y_pred):.4f}")
 ```
 
 **Multi-feature example:**
 
 ```python
-# ── Multi-feature ─────────────────────────────────────────────────────────────
 X_multi = np.random.randn(100, 3)          # 100 samples, 3 features
 y_multi = X_multi @ np.array([1.5, -2.0, 3.0]) + 5.0 + np.random.randn(100)
 
