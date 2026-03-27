@@ -20,8 +20,7 @@
 9. [Predicted vs Actual](#9-predicted-vs-actual)
 10. [Understanding R²](#10-understanding-r)
 11. [Usage](#11-usage)
-12. [Class Reference](#12-class-reference)
-13. [Assumptions](#13-assumptions)
+12. [Assumptions](#13-assumptions)
 
 ---
 
@@ -205,78 +204,8 @@ print(f"Predictions   : {y_pred}")
 print(f"R²            : {model.score(x_test, np.array([12.0, 13.8, 16.1])):.4f}")
 ```
 
-### Plot the best-fit line
 
-```python
-import matplotlib.pyplot as plt
-
-x_line = np.linspace(x_train.min(), x_train.max(), 200)
-
-plt.figure(figsize=(8, 5))
-plt.scatter(x_train, y_train, color='steelblue', s=60, label='Data')
-plt.plot(x_line, model.predict(x_line), color='red', linewidth=2,
-         label=f'ŷ = {model.coef_:.2f}x + {model.intercept_:.2f}')
-
-# draw residuals
-for xi, yi in zip(x_train, y_train):
-    yi_hat = model.predict(np.array([xi]))[0]
-    plt.plot([xi, xi], [yi, yi_hat], color='green', linewidth=0.9, alpha=0.7)
-
-plt.xlabel('x'); plt.ylabel('y')
-plt.title('Simple Linear Regression')
-plt.legend(); plt.tight_layout(); plt.show()
-```
-
-### Evaluate on a test split
-
-```python
-from sklearn.model_selection import train_test_split
-
-x_all = np.linspace(1, 20, 100)
-y_all = 3.5 * x_all + 7 + np.random.normal(0, 3, 100)
-
-x_train, x_test, y_train, y_test = train_test_split(x_all, y_all, test_size=0.2, random_state=42)
-
-model = SimpleLinearRegression()
-model.fit(x_train, y_train)
-
-print(f"Train R²: {model.score(x_train, y_train):.4f}")
-print(f"Test  R²: {model.score(x_test,  y_test ):.4f}")
-```
-
----
-
-## 12. Class Reference
-
-```python
-class SimpleLinearRegression:
-    """Simple Linear Regression via closed-form OLS."""
-
-    # Attributes set after fit()
-    coef_       : float   # learned slope  w
-    intercept_  : float   # learned intercept  b
-
-    def fit(self, x_train, y_train) -> self:
-        """
-        Fit the model using OLS closed-form formulas.
-        x_train : array-like, shape (n_samples,)
-        y_train : array-like, shape (n_samples,)
-        """
-
-    def predict(self, x_test) -> np.ndarray:
-        """
-        Predict target values.
-        x_test : array-like, shape (n_samples,)
-        Returns: y_pred, shape (n_samples,)
-        """
-
-    def score(self, x_test, y_test) -> float:
-        """Return R² coefficient of determination."""
-```
-
----
-
-## 13. Assumptions
+## 12. Assumptions
 
 | # | Assumption | How to check |
 |---|-----------|--------------|
