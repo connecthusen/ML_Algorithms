@@ -34,7 +34,7 @@ class LogisticRegression:
         self.bias = None
         self.classes_ = None
 
-    # ── Activations ──────────────────────────────────────────────────────
+    #  Activations 
 
     def sigmoid(self, z):
         return 1 / (1 + np.exp(-z))
@@ -44,7 +44,7 @@ class LogisticRegression:
         exp_z = np.exp(z)
         return exp_z / np.sum(exp_z, axis=1, keepdims=True)
 
-    # ── Helpers ──────────────────────────────────────────────────────────
+    #  Helpers 
 
     def _one_hot_encode(self, y):
         n_classes = len(self.classes_)
@@ -80,7 +80,7 @@ class LogisticRegression:
 
         return 0.0   # penalty == 'none'
 
-    # ── Binary fit (OvR) ─────────────────────────────────────────────────
+    # Binary fit (OvR) 
 
     def _fit_binary(self, X_train, y_train):
         n_samples, n_features = X_train.shape
@@ -101,7 +101,7 @@ class LogisticRegression:
         self.bias    = weights[0]
         self.weights = weights[1:]
 
-    # ── Multinomial fit (Softmax Regression) ─────────────────────────────
+    # Multinomial fit (Softmax Regression) 
 
     def _fit_multinomial(self, X_train, y_train):
         n_samples, n_features = X_train.shape
@@ -125,7 +125,7 @@ class LogisticRegression:
             self.weights -= self.lr * (w_grad + pen_grad)
             self.bias    -= self.lr * b_grad
 
-    # ── Public API ───────────────────────────────────────────────────────
+    #  Public API
 
     def fit(self, X_train, y_train):
         X_train       = np.asarray(X_train)
