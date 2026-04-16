@@ -3,11 +3,6 @@ import numpy as np
 
 class GaussianNB:
     """
-    Gaussian Naive Bayes classifier.
-
-    Assumes features are conditionally independent given the class label,
-    and that each feature follows a Gaussian (normal) distribution.
-
     Parameters
     ----------
     var_smoothing : float – Fraction of the largest per-feature variance
@@ -27,8 +22,6 @@ class GaussianNB:
 
     def _log_likelihood(self, class_idx, X):
         """
-        Log of the Gaussian PDF summed over features (log-space prevents
-        numerical underflow for high-dimensional inputs).
 
         log p(X | C) = -½ · Σ [ log(2π·σ²) + (x − μ)² / σ² ]
         """
