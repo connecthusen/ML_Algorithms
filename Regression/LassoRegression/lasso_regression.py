@@ -106,7 +106,7 @@ class LassoRegressor:
                 f"  alpha={self.alpha}, solver={self.solver!r}, n_iter_={self.n_iter_}\n"
                 f")")
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    #  helpers
 
     def _soft_threshold(self, z, threshold):
         # S(z, t) = sign(z) * max(|z| - t, 0) — sets small values to exactly zero
@@ -118,7 +118,7 @@ class LassoRegressor:
         residuals = X @ self.coef_ + self.intercept_ - y
         return float(np.mean(residuals ** 2)) + float((self.alpha / m) * np.sum(np.abs(self.coef_)))
 
-    # ── solvers ───────────────────────────────────────────────────────────────
+    # solvers
 
     def _fit_cd(self, X, y):
         """
