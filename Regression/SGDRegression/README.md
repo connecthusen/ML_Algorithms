@@ -1,35 +1,48 @@
-# Linear Regression — Stochastic Gradient Descent (SGD)
+# Linear Regression — Stochastic Gradient Descent
 
-> A clean, NumPy-only implementation of Linear Regression trained via **Stochastic Gradient Descent**.  
-> Matches sklearn behaviour — shuffles data each epoch, updates $w$ and $b$ once per sample.
+> A clean, **NumPy-only** implementation of Linear Regression trained via **Stochastic Gradient Descent (SGD)**.
+> Shuffles the data every epoch and updates $\mathbf{w}$ and $b$ **once per sample**, not once per epoch.
+> **Same model as Batch GD — different update frequency: noisier, but each epoch does m updates instead of 1.**
 
 ---
 
 ## Table of Contents
 
-1. [What is SGD?](#1-what-is-sgd)
+1. [What is Stochastic Gradient Descent?](#1-what-is-stochastic-gradient-descent)
 2. [The Model](#2-the-model)
 3. [Cost Function — MSE](#3-cost-function--mse)
 4. [Deriving the Gradients](#4-deriving-the-gradients)
 5. [Geometric Intuition](#5-geometric-intuition)
-6. [Loss Curve](#6-loss-curve)
-7. [Regression Diagnostics](#7-regression-diagnostics)
-8. [Multivariate Results](#8-multivariate-results)
-9. [Usage](#9-usage)
-10. [Assumptions](#10-assumptions)
-11. [Pros & Cons vs Batch GD & Normal Equation](#11-pros--cons-vs-batch-gd--normal-equation)
+6. [Best-Fit Line & Residuals](#6-best-fit-line--residuals)
+7. [MSE Loss Surface & SGD Trajectory](#7-mse-loss-surface--sgd-trajectory)
+8. [SGD vs Batch GD — Update Rule](#8-sgd-vs-batch-gd--update-rule)
+9. [Loss Curve](#9-loss-curve)
+10. [Regression Diagnostics](#10-regression-diagnostics)
+11. [Multivariate Results](#11-multivariate-results)
+12. [Usage](#12-usage)
+13. [Assumptions](#13-assumptions)
+14. [Pros & Cons vs Batch GD & Normal Equation](#14-pros--cons-vs-batch-gd--normal-equation)
 
 ---
 
-## 1. What is SGD?
+## 1. What is Stochastic Gradient Descent?
 
-Stochastic Gradient Descent is a variant of Gradient Descent that updates weights using **one sample at a time** instead of the full dataset.
+SGD is a variant of Gradient Descent that updates $\mathbf{w}$ and $b$ using **one training sample at a time**, instead of averaging over the whole dataset like Batch GD.
 
-Each epoch shuffles the training data and loops through every sample — making **m updates per epoch** (one per sample). This matches exactly how `sklearn.linear_model.SGDRegressor` works internally.
+Each epoch:
+1. Shuffle the $m$ training samples.
+2. Loop over them one at a time — compute the error for that single sample, then update $\mathbf{w}$ and $b$ immediately.
 
-![Best-fit line and residuals](01_bestfit_residuals.png)
+That means **m updates per epoch** (one per sample), compared to Batch GD's 1 update per epoch. This matches how `sklearn.linear_model.SGDRegressor` behaves internally.
 
-*Each green vertical bar is a **residual** — the gap between a real observation and the model's prediction. The red line is the best-fit found by SGD after convergence.*
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| $w_j$ | Weight | Change in $\hat{y}$ per unit increase in $x_j$ |
+| $b$ | Bias / Intercept | Value of $\hat{y}$ when all $x_j = 0$ |
+| $\hat{y}_i$ | Prediction | Model output for sample $i$ |
+| $e_i = \hat{y}_i - y_i$ | Residual | Signed error for sample $i$ |
+| $\alpha$ | Learning rate | Step size at each update |
+| $m$ | Sample count | Number of updates per epoch |
 
 ---
 
@@ -43,166 +56,211 @@ In matrix form:
 
 $$\hat{\mathbf{y}} = \mathbf{X}\mathbf{w} + b, \qquad \mathbf{X} \in \mathbb{R}^{n \times p},\quad \mathbf{w} \in \mathbb{R}^{p},\quad b \in \mathbb{R}$$
 
-where $\mathbf{w} = [w_1,\ w_2,\ \ldots,\ w_p]^T$ are the feature weights and $b$ is the bias.
+Identical model to Batch GD — only the **way we walk toward the minimum** changes.
 
 ---
 
 ## 3. Cost Function — MSE
 
-We minimise the **Mean Squared Error** over all $n$ training samples:
+The overall objective is still the **Mean Squared Error** over all $n$ samples:
 
-$$\mathcal{L}(\mathbf{w}, b) = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2$$
+$$\mathcal{L}(\mathbf{w}, b) = \frac{1}{n}\sum_{i=1}^{n}(\hat{y}_i - y_i)^2$$
 
-However, unlike Batch GD — SGD never actually computes this full-dataset loss during the update step. Each weight update uses the error from **a single sample** only.
+But SGD never computes this full-dataset loss during an update — each step only looks at **one sample's** squared error:
 
-![MSE Loss Surface with SGD Trajectory](02_loss_surface.png)
-
-*The SGD trajectory is noticeably noisier than Batch GD — it bounces around the contours before settling near the minimum. This noise can help escape shallow local minima in non-convex problems.*
+$$\mathcal{L}_i(\mathbf{w}, b) = (\hat{y}_i - y_i)^2$$
 
 ---
 
 ## 4. Deriving the Gradients
 
-For a **single sample** $(x_i, y_i)$, the per-sample loss is:
-
-$$\mathcal{L}_i = (y_i - \hat{y}_i)^2 = (\hat{y}_i - y_i)^2$$
-
-Taking partial derivatives:
-
-**Gradient w.r.t bias $b$:**
-
-$$\frac{\partial \mathcal{L}_i}{\partial b} = \hat{y}_i - y_i = \text{error}_i$$
+Taking partial derivatives of the **per-sample** loss $\mathcal{L}_i$:
 
 **Gradient w.r.t weights $\mathbf{w}$:**
 
-$$\frac{\partial \mathcal{L}_i}{\partial \mathbf{w}} = x_i \cdot (\hat{y}_i - y_i) = x_i \cdot \text{error}_i$$
+$$\frac{\partial \mathcal{L}_i}{\partial \mathbf{w}} = x_i \cdot (\hat{y}_i - y_i) = x_i \cdot e_i$$
 
-> No $\frac{1}{m}$ division — single sample, no averaging needed.
+**Gradient w.r.t bias $b$:**
 
-![SGD vs Batch GD — Update Rule Comparison](03_normal_equation.png)
+$$\frac{\partial \mathcal{L}_i}{\partial b} = \hat{y}_i - y_i = e_i$$
 
-*Side-by-side comparison of Batch GD vs SGD update rules. The key difference: SGD uses one sample's error directly, Batch GD averages over all m samples.*
+**Update rule — applied after every single sample:**
+
+$$\mathbf{w} \leftarrow \mathbf{w} - \alpha \cdot x_i \cdot e_i, \qquad b \leftarrow b - \alpha \cdot e_i$$
+
+> No $\frac{1}{m}$ averaging term — there's only one sample, so nothing to average over.
 
 ---
 
 ## 5. Geometric Intuition
 
-- Each epoch **shuffles** the dataset — every sample is seen exactly once per epoch.
-- For each sample $i$, we compute the residual and immediately nudge $(w, b)$.
-- The path through the loss surface is **jagged** — each sample pulls the weights slightly differently.
-- Over many epochs the noise averages out and the weights converge near the true minimum.
+- Each epoch **shuffles** the dataset so every sample is seen exactly once, in a random order.
+- After each sample, $(\mathbf{w}, b)$ takes a small step based on that sample's error alone.
+- The path through the loss surface is **jagged** — each sample pulls the weights in a slightly different direction.
+- Over many epochs the noise averages out and the weights settle near the true minimum.
 
-**Why shuffle?** Without shuffling, ordered data (e.g. time series) creates systematic bias in updates — the model would overfit the last few samples seen each epoch.
+**Why shuffle?** Without it, ordered data (e.g. time series) biases each epoch toward whatever samples come last — the model ends up overfitting the tail of the dataset.
 
 ---
 
-## 6. Loss Curve
+## 6. Best-Fit Line & Residuals
 
-`loss_history_` stores MSE over the full dataset at the end of each epoch. Unlike Batch GD, the SGD loss curve is **noisy** — this is expected behaviour.
+![Best-Fit Line and Residuals](01_bestfit_residuals.png)
+
+| Visual Element | Meaning |
+|----------------|---------|
+| Blue dots | Observed data points $(x_i,\ y_i)$ |
+| Red line | Fitted line $\hat{y} = \mathbf{w} \cdot x + b$ after convergence |
+| Green bars | Residuals $e_i = y_i - \hat{y}_i$ |
+
+Residuals should be **small and scattered with no obvious pattern** — same fit-quality check as Batch GD.
+
+---
+
+## 7. MSE Loss Surface & SGD Trajectory
+
+![MSE Loss Surface with SGD Trajectory](02_loss_surface.png)
+
+- The contour map shows MSE as a function of slope $w$ and intercept $b$ — still a smooth convex bowl.
+- The **orange path** is noticeably jagged compared to Batch GD's smooth line — each of the $m$ per-sample updates nudges $(w, b)$ in a slightly different direction.
+- The **green star** marks where SGD settles, close to but not exactly at the true minimum (SGD oscillates around the minimum rather than landing on it precisely).
+
+---
+
+## 8. SGD vs Batch GD — Update Rule
+
+![SGD vs Batch GD Update Rule Comparison](03_normal_equation.png)
+
+| Step | Batch GD | SGD |
+|------|----------|-----|
+| Sample used | All $m$ samples | 1 shuffled sample |
+| Residual | $e = \hat{y} - y$ (vector) | $e_i = \hat{y}_i - y_i$ (scalar) |
+| $\partial L/\partial b$ | $\frac{1}{m}\sum e_i$ | $e_i$ |
+| $\partial L/\partial \mathbf{w}$ | $\frac{1}{m}\mathbf{X}^T e$ | $x_i \cdot e_i$ |
+| Updates / epoch | 1 | $m$ |
+
+---
+
+## 9. Loss Curve
+
+`loss_history_` logs the **full-dataset** MSE at the end of every epoch, even though updates happen per sample.
 
 ![Loss Curve — SGD vs Batch GD](06_loss_curve.png)
 
-*Blue (Batch GD) descends smoothly. Orange (SGD) is noisier but converges to the same region. The noise is the price of faster per-epoch updates.*
+Batch GD descends smoothly. SGD is noisier at convergence — this is expected, since each of the $m$ per-epoch updates only sees one sample's error. The noise is the trade-off for many more updates per epoch.
 
 ---
 
-## 7. Regression Diagnostics
+## 10. Regression Diagnostics
 
-After fitting, always verify the four core assumptions visually:
+![Regression Diagnostics](04_diagnostics.png)
 
-![Regression diagnostics](04_diagnostics.png)
+| Plot | What to look for | Assumption verified |
+|------|-----------------|---------------------|
+| **Residuals vs Fitted** | Random scatter around $y=0$, no curve | Linearity |
+| **Normal Q-Q** | Points on the diagonal line | Normality of residuals |
+| **Scale-Location** | Flat, uniform band — no funnel | Homoscedasticity |
+| **Residual Histogram** | Bell-shaped, centred at 0 | Normality |
 
-| Plot | What to look for | Assumption checked |
-|------|-----------------|-------------------|
-| **Residuals vs Fitted** | Random scatter around 0 | Linearity & homoscedasticity |
-| **Normal Q-Q** | Points on the diagonal | Normality of residuals |
-| **Scale-Location** | Flat, random band | Constant variance |
-| **Residual Distribution** | Bell-shaped histogram | Normality |
-
----
-
-## 8. Multivariate Results
-
-In the multivariate case ($p > 1$), the same per-sample update applies without modification.
-
-![Predicted vs Actual and feature weights](05_multivariate.png)
-
-*Left: predictions closely track true values (R² near 1). Right: the learned $\mathbf{w}$ values — green bars are positive weights, red bars are negative.*
+**Red flags:**
+- Curve in *Residuals vs Fitted* → relationship is non-linear
+- Funnel shape in *Scale-Location* → variance not constant
+- Heavy tails in Q-Q → residuals not normal
 
 ---
 
-## 9. Usage
+## 11. Multivariate Results
+
+The same per-sample update applies unchanged when $p > 1$ — `xi` is just a row vector instead of a scalar.
+
+![Multivariate Results](05_multivariate.png)
+
+**Left panel:** predicted vs actual $y$ — points hugging the red dashed diagonal indicate an accurate fit.
+**Right panel:** learned feature weights $\mathbf{w}$ — green bars are positive weights, red bars are negative.
+
+---
+
+## 12. Usage
+
+### Basic fit and predict
 
 ```python
 import numpy as np
-from sgd_regressor import SGDRegressor
+from SGDRegressor import SGDRegressor
 
-# Prepare data
 X_train = np.array([[1], [2], [3], [4], [5]], dtype=float)
 y_train = np.array([2.1, 3.9, 6.2, 7.8, 10.1])
 
-# Fit
 model = SGDRegressor(learning_rate=0.01, epochs=1000)
 model.fit(X_train, y_train)
 
-print("Intercept (b) :", model.intercept_)   # scalar
-print("Weights   (w) :", model.coef_)        # array, shape (n_features,)
+print(f"Intercept (b) : {model.intercept_:.4f}")
+print(f"Weights   (w) : {model.coef_}")
+print(model)
 
-# Predict
 X_test = np.array([[6], [7], [8]], dtype=float)
+y_test = np.array([12.0, 13.8, 16.1])
 y_pred = model.predict(X_test)
-print("Predictions   :", y_pred)
 
-# Evaluate
-print(f"R²  = {model.score(X_test, y_pred):.4f}")
+print(f"Predictions   : {y_pred}")
+print(f"R²            : {model.score(X_test, y_test):.4f}")
+```
 
-# Plot loss curve
+### Plot the loss curve
+
+```python
 import matplotlib.pyplot as plt
+
 plt.plot(model.loss_history_)
-plt.xlabel("Epoch"); plt.ylabel("MSE")
+plt.xlabel("Epoch")
+plt.ylabel("MSE")
 plt.title("SGD Loss Curve")
 plt.show()
 ```
 
-**Multi-feature example:**
+### Multi-feature example
 
 ```python
-X_multi = np.random.randn(100, 3)          # 100 samples, 3 features
+X_multi = np.random.randn(100, 3)
 y_multi = X_multi @ np.array([1.5, -2.0, 3.0]) + 5.0 + np.random.randn(100)
 
 model = SGDRegressor(learning_rate=0.01, epochs=2000)
 model.fit(X_multi, y_multi)
-predictions = model.predict(X_multi)
+
+print(f"R² = {model.score(X_multi, y_multi):.4f}")
+print(model)
 ```
 
 ---
 
-## 10. Assumptions
+## 13. Assumptions
 
-For SGD to find a meaningful solution:
+| # | Assumption | How to check |
+|---|-----------|--------------|
+| 1 | **Linearity** — true relationship is $y = \mathbf{X}\mathbf{w} + b + \varepsilon$ | Residuals vs Fitted plot |
+| 2 | **Zero-mean errors** — $\mathbb{E}[\varepsilon] = 0$ | Residual histogram centred at 0 |
+| 3 | **Homoscedasticity** — $\text{Var}(\varepsilon_i) = \sigma^2$ constant | Scale-Location plot |
+| 4 | **Independent errors** — $\text{Cov}(\varepsilon_i, \varepsilon_j) = 0$ | Durbin-Watson test |
+| 5 | **Normality** *(inference only)* — $\varepsilon \sim \mathcal{N}(0, \sigma^2)$ | Normal Q-Q plot |
 
-1. **Linearity** — the true relationship is $y = \mathbf{X}\mathbf{w} + b + \varepsilon$.
-2. **Zero-mean errors** — $\mathbb{E}[\varepsilon] = 0$.
-3. **Homoscedasticity** — $\text{Var}(\varepsilon_i) = \sigma^2$ (constant for all $i$).
-4. **No autocorrelation** — $\text{Cov}(\varepsilon_i, \varepsilon_j) = 0$ for $i \neq j$.
-5. **Feature scaling strongly recommended** — SGD is more sensitive to feature scale than Batch GD. Use `StandardScaler` before fitting.
+> **Feature scaling is strongly recommended** — SGD is more sensitive to feature scale than Batch GD, since a single unscaled feature can dominate every per-sample update. Use `StandardScaler` or normalise manually before fitting.
 
 ---
 
-## 11. Pros & Cons vs Batch GD & Normal Equation
+## 14. Pros & Cons vs Batch GD & Normal Equation
 
 | Criterion | **SGD** | **Batch GD** | **Normal Equation** |
 |-----------|---------|--------------|----------------------|
-| Updates per epoch | m (one per sample) | 1 | — (one-shot) |
+| Updates per epoch | $m$ (one per sample) | 1 | — (one-shot) |
 | Gradient noise | High (single sample) | Low (full dataset) | None |
-| Convergence | Noisy but fast | Smooth but slower | Exact, instant |
+| Convergence | Noisy but fast per-epoch progress | Smooth but slower | Exact, instant |
 | Hyperparameters | Learning rate, epochs | Learning rate, epochs | None |
 | Time complexity | $O(k \cdot n \cdot p)$ | $O(k \cdot n \cdot p)$ | $O(p^3)$ |
 | Best for | Large datasets, online learning | Medium datasets | $p \lesssim 10{,}000$ |
 | Feature scaling | Strongly required | Recommended | Not needed |
 | sklearn equivalent | `SGDRegressor` | — | `LinearRegression` |
 
-**Rule of thumb:** use SGD for large datasets where Batch GD is too slow per epoch; use the Normal Equation for small-to-medium datasets where an exact solution is preferred.
+**Rule of thumb:** use SGD when the dataset is too large for Batch GD to be efficient per epoch; use the Normal Equation for small-to-medium datasets where an exact, closed-form solution is preferred.
 
 ---
 
@@ -210,9 +268,9 @@ For SGD to find a meaningful solution:
 
 ```
 numpy >= 1.21
+matplotlib >= 3.4   # optional — for plotting and loss curve only
+scipy >= 1.7        # optional — for Q-Q diagnostics
 ```
-
-No other dependencies required.
 
 ---
 
