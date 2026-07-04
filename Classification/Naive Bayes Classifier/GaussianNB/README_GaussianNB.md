@@ -1,432 +1,239 @@
-# Gaussian Naive Bayes Classifier
+# Gaussian Naive Bayes
 
-> A pure-NumPy implementation of **Gaussian Naive Bayes** — a probabilistic classifier grounded in Bayes' theorem with a strong (naive) conditional independence assumption between features. No scikit-learn under the hood.
+> A clean, **NumPy-only** implementation of Gaussian Naive Bayes.
+> No gradient descent, no iterative optimisation — every parameter is computed directly from the data in one pass.
+> **Bayes' theorem + a per-feature Gaussian assumption + a (naive) independence assumption.**
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Mathematical Foundation](#mathematical-foundation)
-- [Bayes Theorem & Decision Rule](#bayes-theorem--decision-rule)
-- [Parameter Estimation](#parameter-estimation)
-- [Log-Space Computation](#log-space-computation)
-- [Variance Smoothing](#variance-smoothing)
-- [Training Pipeline](#training-pipeline)
-- [The Naive Independence Assumption](#the-naive-independence-assumption)
-- [API Reference](#api-reference)
-- [Usage Examples](#usage-examples)
-- [Notes](#notes)
+1. [What is Naive Bayes?](#1-what-is-naive-bayes)
+2. [Bayes' Theorem](#2-bayes-theorem)
+3. [The Gaussian Likelihood](#3-the-gaussian-likelihood)
+4. [The Naive Independence Assumption](#4-the-naive-independence-assumption)
+5. [Training — Closed-Form, No Iteration](#5-training--closed-form-no-iteration)
+6. [Why Log-Space?](#6-why-log-space)
+7. [Variance Smoothing](#7-variance-smoothing)
+8. [Decision Boundary](#8-decision-boundary)
+9. [Training Pipeline](#9-training-pipeline)
+10. [Tuning var_smoothing](#10-tuning-var_smoothing)
+11. [Usage](#11-usage)
+12. [Assumptions](#12-assumptions)
+13. [Pros & Cons vs Logistic Regression & SVM](#13-pros--cons-vs-logistic-regression--svm)
 
 ---
 
-## Overview
+## 1. What is Naive Bayes?
 
-This module provides a from-scratch implementation of Gaussian Naive Bayes using **only NumPy**. It models each feature as a Gaussian (normal) distribution per class, and classifies new samples by computing the posterior probability of each class given the input features.
+Naive Bayes is a probabilistic classifier built directly on Bayes' theorem. For each class, it asks: *"if I assume this data point came from this class, how likely does it look?"* — then picks whichever class makes the observed features most probable, weighted by how common that class is to begin with.
 
-| Aspect | Detail |
-|--------|--------|
-| **Likelihood model** | Gaussian PDF per feature per class |
-| **Decision rule** | MAP — argmax of posterior log-probability |
-| **Computation** | Log-space throughout (numerical stability) |
-| **Smoothing** | Variance smoothing via `var_smoothing` |
-| **Multi-class** | Supported natively for any number of classes |
+It's called **naive** because it assumes every feature is independent of every other feature, given the class. That assumption is almost never exactly true, but the classifier is often accurate anyway — and it trains in one pass over the data, with no gradient descent required.
 
----
-
-## Mathematical Foundation
-
-### Gaussian Probability Density Function
-
-The model assumes each feature `xⱼ` follows a Gaussian distribution given the class `C`:
-
-```
-p(xⱼ | C) = 1 / √(2π·σ²ⱼ꜀) · exp( −(xⱼ − μⱼ꜀)² / (2·σ²ⱼ꜀) )
-```
-
-where:
-- `μⱼ꜀` — mean of feature `j` within class `C`
-- `σ²ⱼ꜀` — variance of feature `j` within class `C`
-
-These parameters are estimated directly from the training data — no iterative optimization required.
-
-### The Naive Independence Assumption
-
-Under the **Naive Bayes** assumption, all features are treated as **conditionally independent** given the class label. This means the joint likelihood factorizes into a product of per-feature terms:
-
-```
-p(x | C) = p(x₁ | C) · p(x₂ | C) · … · p(xₚ | C)  =  ∏ⱼ p(xⱼ | C)
-```
-
-This factorization is what makes the model tractable — instead of estimating a full joint distribution (which is exponential in the number of features), we estimate only `n_features × n_classes` univariate Gaussians.
-
-![Gaussian Likelihood](01_gaussian_likelihood.png)
-
-The left plot shows the **Gaussian PDF** for three classes with different means and variances. The decision rule assigns a new sample to whichever class has the highest posterior — informally, the class whose PDF gives the highest density at the observed feature value. The right plot compares likelihoods at two specific sample points, showing how the relative heights directly determine the predicted class.
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| $C$ | Class | The label being predicted |
+| $x_j$ | Feature $j$ | One input dimension |
+| $P(C)$ | Prior | How common class $C$ is, before seeing any features |
+| $p(x \mid C)$ | Likelihood | How probable feature values $x$ are, under class $C$ |
+| $P(C \mid x)$ | Posterior | Updated belief about the class, after seeing $x$ |
+| $\mu, \sigma^2$ | Mean, variance | Gaussian parameters fit per class, per feature |
 
 ---
 
-## Bayes Theorem & Decision Rule
+## 2. Bayes' Theorem
 
-### Posterior Probability
+$$P(C \mid x) = \frac{P(C) \cdot p(x \mid C)}{p(x)}$$
 
-Given an observation `x`, we want the class `C*` that maximizes the posterior:
+Since $p(x)$ is the same for every class, it doesn't affect which class wins — we only need to compare the **numerator** across classes:
 
-```
-C* = argmax_C  P(C | x)
-```
+$$P(C \mid x) \ \propto \ P(C) \cdot p(x \mid C)$$
 
-By Bayes' theorem:
+![Bayes Theorem: Prior x Likelihood -> Posterior](06_bayes_theorem.png)
 
-```
-P(C | x) = P(C) · p(x | C) / p(x)
-```
-
-Since `p(x)` is constant across all classes (it is the **evidence**), it does not affect the argmax and can be dropped:
-
-```
-C* = argmax_C  P(C) · p(x | C)
-```
-
-This is the **Maximum A Posteriori (MAP)** decision rule.
-
-### Joint Log-Probability
-
-Applying the naive independence assumption and taking logarithms to avoid numerical underflow:
-
-```
-log P(C | x)  ∝  log P(C)  +  Σⱼ log p(xⱼ | C)
-```
-
-Expanding the log-Gaussian term:
-
-```
-log p(xⱼ | C) = −½ · [ log(2π·σ²ⱼ꜀) + (xⱼ − μⱼ꜀)² / σ²ⱼ꜀ ]
-```
-
-Summing over all features:
-
-```
-log p(x | C) = −½ · Σⱼ [ log(2π·σ²ⱼ꜀) + (xⱼ − μⱼ꜀)² / σ²ⱼ꜀ ]
-```
-
-The final prediction is:
-
-```
-C* = argmax_C  { log P(C)  +  log p(x | C) }
-```
-
-![Bayes Theorem](06_bayes_theorem.png)
-
-The three panels illustrate how classification works step-by-step: **① Prior** — baseline class frequency in training data. **② Likelihood** — how probable the observed feature value is under each class Gaussian. **③ Posterior** — the product of prior and likelihood (normalized), from which the predicted class is the argmax.
+Prior favors Class 0 (60% vs 40%), but the likelihood at $x=3.0$ favors Class 1 strongly enough to flip the posterior — that trade-off is the entire algorithm.
 
 ---
 
-## Parameter Estimation
+## 3. The Gaussian Likelihood
 
-All parameters are estimated analytically from the training data — no gradient descent is needed.
+For each class $C$ and feature $x_j$, we assume $x_j \mid C \sim \mathcal{N}(\mu_{C,j}, \sigma^2_{C,j})$:
 
-### Class Prior
+$$p(x_j \mid C) = \frac{1}{\sqrt{2\pi\sigma^2_{C,j}}} \exp\left(-\frac{(x_j - \mu_{C,j})^2}{2\sigma^2_{C,j}}\right)$$
 
-The prior probability of each class is estimated by its frequency in the training set:
+![Gaussian Likelihood P(x|C)](01_gaussian_likelihood.png)
 
-```
-P(C) = |{i : yᵢ = C}| / n_samples
-```
-
-### Per-Class Feature Mean
-
-```
-μⱼ꜀ = (1 / nᴄ) · Σ_{i : yᵢ=C} xᵢⱼ
-```
-
-### Per-Class Feature Variance
-
-```
-σ²ⱼ꜀ = (1 / nᴄ) · Σ_{i : yᵢ=C} (xᵢⱼ − μⱼ꜀)²
-```
-
-These are **biased** (MLE) variance estimates — the denominator is `nᴄ`, not `nᴄ − 1`. This matches scikit-learn's behavior.
-
-### Stored Attributes
-
-| Attribute | Shape | Description |
-|-----------|-------|-------------|
-| `self.theta_` | `(n_classes, n_features)` | Per-class feature means |
-| `self.var_` | `(n_classes, n_features)` | Per-class feature variances (+ smoothing) |
-| `self.class_prior_` | `(n_classes,)` | Class priors `P(C)` |
+**Left:** each class gets its own bell curve, fit from its own training samples. **Right:** at a given feature value, whichever class's curve is tallest is the most likely explanation for that observation.
 
 ---
 
-## Log-Space Computation
+## 4. The Naive Independence Assumption
 
-Multiplying raw probabilities across many features drives the value toward zero:
+Assuming features are conditionally independent given the class lets the joint likelihood factor into a simple product:
 
-```
-p(x | C) = ∏ⱼ p(xⱼ | C)  →  0   (floating-point underflow)
-```
+$$p(x \mid C) = \prod_{j=1}^{p} p(x_j \mid C)$$
 
-![Log-Space Stability](03_log_space_stability.png)
+![Naive Independence Assumption](07_independence_assumption.png)
 
-The left panel shows the raw probability product underflowing to exactly `0.0` after just 20–30 features — at that point all classes have identical (zero) likelihoods and the argmax is meaningless. The right panel shows the same computation in log-space: the sum stays finite and numerically well-conditioned regardless of dimensionality.
-
-**The fix:** convert to log-space and sum, rather than multiply raw probabilities:
-
-```
-log p(x | C)  =  Σⱼ log p(xⱼ | C)       [always finite]
-```
-
-The implementation computes joint log-probabilities throughout and never materializes raw probability products.
+**Left:** strongly correlated features violate the assumption — Naive Bayes will double-count the same signal across both features. **Right:** near-independent features are exactly the case the model was designed for. In practice the assumption is often violated *and* the model still performs reasonably — correlated features just get some redundant weight, they don't break the math.
 
 ---
 
-## Variance Smoothing
+## 5. Training — Closed-Form, No Iteration
 
-### The Zero-Variance Problem
+For every class $c$, using only the samples that belong to it:
 
-If a feature has zero (or near-zero) variance within a class — for instance, if all training samples of class `C` have the same value for feature `j` — then `σ²ⱼ꜀ = 0`. This causes a division by zero in the Gaussian PDF:
+$$\mu_{c,j} = \text{mean}(x_j \text{ for samples in class } c)$$
 
-```
-p(xⱼ | C) = 1 / √(2π · 0)  →  undefined
-```
+$$\sigma^2_{c,j} = \text{var}(x_j \text{ for samples in class } c)$$
 
-### Solution: Additive Smoothing
+$$P(c) = \frac{\text{number of samples in class } c}{\text{total samples}}$$
 
-A small `ε` is added to every class variance before any computation:
-
-```
-σ²ⱼ꜀  ←  σ²ⱼ꜀  +  ε
-```
-
-where:
-
-```
-ε = var_smoothing × max_j Var(xⱼ)
-```
-
-The smoothing term is **scaled to the data** — it adds a fraction of the largest global feature variance. This means the epsilon is appropriately sized regardless of the feature scale.
-
-| `var_smoothing` | Behaviour |
-|-----------------|-----------|
-| `1e-12` (very small) | Minimal adjustment — risk of near-zero variances surviving |
-| `1e-9` (default) | Matches sklearn — safe for most datasets |
-| `1e-6` | Noticeable smoothing — suitable for very small or constant features |
-| `1e-3` | Aggressive smoothing — can hurt accuracy on well-conditioned data |
-
-![Variance Smoothing](04_var_smoothing.png)
-
-The left panel shows how smoothing raises near-zero variances (e.g., `0.001`) while barely affecting large variances (e.g., `5.0`). The right panel shows that the default `var_smoothing=1e-9` is conservative — it rescues degenerate near-zero variances without distorting the estimates for healthy features.
-
-![Accuracy vs Smoothing](08_accuracy_vs_smoothing.png)
-
-Accuracy is stable across a wide range of `var_smoothing` values. It only degrades at extremely aggressive smoothing (`> 1e-3`), where the added epsilon term begins to dominate the true variance estimates. The default `1e-9` sits safely in the flat, optimal region.
+That's the entire training step — no learning rate, no epochs, no convergence to wait for.
 
 ---
 
-## Training Pipeline
+## 6. Why Log-Space?
 
-![Training Pipeline](02_training_pipeline.png)
+Multiplying many probabilities together (one per feature) shrinks the result toward zero extremely fast — with enough features, it underflows to exactly `0.0` and every class becomes indistinguishable.
 
-`fit()` performs a **single pass** over the training data — no iterative optimization:
+![Why Log-Space - Numerical Stability](03_log_space_stability.png)
 
-1. Inputs are cast to NumPy arrays; unique class labels are stored in `self.classes_`
-2. For each class `C`: filter samples, compute mean, variance, and prior
-3. Apply variance smoothing: `ε = var_smoothing × max_global_var`; add `ε` to every element of `self.var_`
-4. Trained parameters (`theta_`, `var_`, `class_prior_`) are stored and used by `predict`, `predict_joint_log_proba`, and `score`
+Taking the log turns the product into a sum, which stays numerically well-behaved no matter how many features there are:
 
-### Fit step-by-step
+$$\log p(x \mid C) = \sum_{j=1}^{p} \log p(x_j \mid C) = -\frac{1}{2}\sum_{j=1}^{p}\left[\log(2\pi\sigma_{C,j}^2) + \frac{(x_j - \mu_{C,j})^2}{\sigma_{C,j}^2}\right]$$
 
-For each class `C`:
-
-1. Filter: `X_c = X[y == C]` — shape `(nᴄ, n_features)`
-2. Mean:   `theta_[C] = mean(X_c, axis=0)` — shape `(n_features,)`
-3. Variance: `var_[C] = var(X_c, axis=0)` — shape `(n_features,)`
-4. Prior: `class_prior_[C] = nᴄ / n_samples`
-
-After all classes:
-
-5. Smoothing: `epsilon = var_smoothing × max(var(X, axis=0))`; `var_ += epsilon`
-
-### Predict step-by-step
-
-For each test sample `x`:
-
-1. For each class `C`, compute joint log-probability:
-   `log_joint[C] = log P(C) + Σⱼ log p(xⱼ | C)`
-2. Predicted class: `argmax_C log_joint[C]`
+Comparisons between classes still work identically in log-space, since $\log$ is monotonic — whichever class had the highest probability still has the highest log-probability.
 
 ---
 
-## The Naive Independence Assumption
+## 7. Variance Smoothing
 
-The "naive" in Naive Bayes refers to the assumption that all features are conditionally independent given the class. In practice this is rarely exactly true — most real-world features are correlated.
+If a feature has (near) zero variance within a class, $\sigma^2 \approx 0$ makes the likelihood formula divide by zero. `var_smoothing` adds a small buffer to every class's variance to prevent this:
 
-![Independence Assumption](07_independence_assumption.png)
+$$\sigma^2_{c,j} \leftarrow \sigma^2_{c,j} + \varepsilon \cdot \max_j(\text{Var}(x_j) \text{ over the whole dataset})$$
 
-**Left:** Strongly correlated features. Here the joint distribution `p(x₁, x₂ | C)` is not separable into `p(x₁ | C) · p(x₂ | C)`. Naive Bayes misrepresents the true class-conditional density, which can degrade accuracy. **Right:** Approximately independent features — the naive assumption holds, and the model performs well.
+![Effect of var_smoothing on Variance Estimates](04_var_smoothing.png)
 
-> **Despite the violated assumption, Naive Bayes is often competitive in practice.** What matters for classification is not an accurate probability estimate, but the correct argmax — i.e., whether the right class still wins even if the exact posterior values are off. Naive Bayes tends to be overconfident (posteriors close to 0 or 1), but the argmax is often correct.
-
-### When to use Gaussian Naive Bayes
-
-| Condition | Suitable? |
-|-----------|-----------|
-| Features are continuous and roughly Gaussian | ✅ Ideal |
-| Features are approximately independent | ✅ Works well |
-| High-dimensional input (text, images as feature vectors) | ✅ Scales well |
-| Features are heavily correlated | ⚠ May underperform |
-| Features follow non-Gaussian distributions (bimodal, skewed) | ⚠ Consider discretization or kernel density |
-| Very small training sets | ✅ Reliable — few parameters to estimate |
+**Left:** for any variance that isn't already near zero, smoothing barely changes it. **Right:** for a variance that's dangerously close to zero, smoothing rescues it into a small but usable positive number. This mirrors exactly how `sklearn.naive_bayes.GaussianNB` handles the same issue.
 
 ---
 
-## Decision Boundary
+## 8. Decision Boundary
 
-![Decision Boundary](05_decision_boundary.png)
+![GaussianNB Decision Boundary - Iris Dataset](05_decision_boundary.png)
 
-Unlike logistic regression, Gaussian Naive Bayes produces **quadratic** decision boundaries in general — because the boundary between classes C₁ and C₂ is defined by:
-
-```
-log P(C₁) + log p(x | C₁)  =  log P(C₂) + log p(x | C₂)
-```
-
-This is a quadratic equation in `x` when the per-class variances differ. When all classes share the same covariance, the boundary reduces to linear (analogous to Linear Discriminant Analysis).
-
-On the Iris dataset (petal length × petal width, standardised):
-- **Setosa** is cleanly separated — its Gaussian distributions are well-separated from the other two classes
-- **Versicolor / Virginica** overlap slightly — the curved boundary reflects different per-class variances, which logistic regression (linear boundary) cannot represent
+Fit on the Iris dataset's petal length and width. Note the boundary is **curved**, not a straight line — unlike linear models (GD regressor, linear SVM), Naive Bayes' boundary follows wherever the Gaussian likelihoods happen to cross over, which is generally quadratic in shape.
 
 ---
 
-## API Reference
+## 9. Training Pipeline
 
-### Constructor
+![GaussianNB Training Pipeline](02_training_pipeline.png)
 
-`GaussianNB(var_smoothing=1e-9)`
+The four-step flow that `fit()` runs once, in a single pass:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `var_smoothing` | `float` | `1e-9` | Fraction of max global variance added to all class variances for numerical stability |
-
-### Methods
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `fit(X_train, y_train)` | `self` | Estimate per-class means, variances, and priors |
-| `predict_joint_log_proba(X_test)` | `ndarray` | Joint log-probabilities `(n_samples, n_classes)` |
-| `predict(X_test)` | `ndarray` | Predicted class labels `(n_samples,)` |
-| `score(X_test, y_test)` | `float` | Mean accuracy on test data |
-
-### Attributes (after `fit`)
-
-| Attribute | Shape | Description |
-|-----------|-------|-------------|
-| `self.classes_` | `(n_classes,)` | Unique class labels from `y_train` |
-| `self.theta_` | `(n_classes, n_features)` | Per-class feature means |
-| `self.var_` | `(n_classes, n_features)` | Per-class feature variances (smoothed) |
-| `self.class_prior_` | `(n_classes,)` | Prior probability `P(C)` for each class |
-
-### Internal Methods
-
-| Method | Description |
-|--------|-------------|
-| `_log_likelihood(class_idx, X)` | Log-Gaussian PDF summed over features for a single class |
+| Step | Operation |
+|------|-----------|
+| ① | Entry point — cast to arrays, validate shapes |
+| ② | Per-class stats — mean, variance, and prior for every class |
+| ③ | Variance smoothing — add ε · max(global variance) to every class's variance |
+| ④ | Store parameters — `theta_`, `var_`, `class_prior_`, `classes_` |
 
 ---
 
-## Usage Examples
+## 10. Tuning var_smoothing
 
-### Basic Classification — Iris Dataset
+![Accuracy vs var_smoothing - Iris Dataset](08_accuracy_vs_smoothing.png)
 
-```python
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+Accuracy is flat across a wide range of `var_smoothing` values — it only matters when a class-feature variance is genuinely close to zero. Too large a value (upper-right of the plot) starts inflating every variance unnecessarily and can hurt accuracy.
 
-X, y = load_iris(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+---
 
-model = GaussianNB()
-model.fit(X_train, y_train)
+## 11. Usage
 
-print(f"Accuracy:      {model.score(X_test, y_test):.4f}")   # ~0.9667
-print(f"Classes:       {model.classes_}")                     # [0 1 2]
-print(f"Feature means:\n{model.theta_}")                      # (3, 4)
-```
-
-### Custom Smoothing
-
-```python
-# Very small smoothing — only rescues true zero variances
-model = GaussianNB(var_smoothing=1e-12)
-model.fit(X_train, y_train)
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")
-
-# Stronger smoothing — regularizes toward uniform variance
-model = GaussianNB(var_smoothing=1e-6)
-model.fit(X_train, y_train)
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")
-```
-
-### Inspecting Joint Log-Probabilities
-
-```python
-model = GaussianNB()
-model.fit(X_train, y_train)
-
-log_probs = model.predict_joint_log_proba(X_test[:5])
-print(log_probs)
-# [[-12.3, -98.1, -154.2],   ← class 0 (setosa)  — clear winner
-#  [-11.8, -91.7, -148.0],   ← class 0 (setosa)
-#  [-9.2,  -4.1,  -87.3],    ← class 1 (versicolor) — close between 0 and 1
-#  [-88.2,  -3.7,  -12.1],   ← class 2 (virginica)
-#  [-90.1,  -2.1,  -15.8]]   ← class 1 (versicolor)
-```
-
-> The log-probability values are **not normalized** — they are joint log-probabilities, not true posteriors. For calibrated probabilities, apply `scipy.special.softmax` along `axis=1`.
-
-### Multi-class with String Labels
+### Basic fit and predict
 
 ```python
 import numpy as np
+from GaussianNB import GaussianNB
 
-X_train = np.array([[1.0, 2.0], [1.5, 1.8], [5.0, 8.0],
-                    [8.0, 8.0], [1.0, 0.6], [9.0, 11.0]])
-y_train = np.array(['cat', 'cat', 'dog', 'dog', 'cat', 'dog'])
+X_train = np.array([[1.0, 2.1], [1.2, 1.9], [3.9, 4.2], [4.1, 3.8]])
+y_train = np.array([0, 0, 1, 1])
 
 model = GaussianNB()
 model.fit(X_train, y_train)
 
-X_new = np.array([[1.2, 1.9], [7.5, 9.0]])
-print(model.predict(X_new))   # ['cat', 'dog']
-print(model.classes_)         # ['cat', 'dog']
+print(f"Classes      : {model.classes_}")
+print(f"Means (θ)    : {model.theta_}")
+print(f"Variances    : {model.var_}")
+print(f"Priors       : {model.class_prior_}")
+print(model)
+
+X_test = np.array([[1.1, 2.0], [4.0, 4.0]])
+print(f"Predictions  : {model.predict(X_test)}")
+print(f"Accuracy     : {model.score(X_train, y_train):.4f}")
 ```
 
-### Binary Classification — Breast Cancer
+### Inspecting joint log-probabilities
 
 ```python
-from sklearn.datasets import load_breast_cancer
-from sklearn.model_selection import train_test_split
-
-X, y = load_breast_cancer(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-model = GaussianNB(var_smoothing=1e-9)
-model.fit(X_train, y_train)
-
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")   # ~0.9298
+log_proba = model.predict_joint_log_proba(X_test)
+print(log_proba)   # shape (n_samples, n_classes) — higher is more likely
 ```
 
-> **Note:** Feature scaling (`StandardScaler`) is **not required** for Gaussian Naive Bayes — the model estimates the mean and variance of each feature independently and is scale-invariant. However, scaling can still be applied without affecting correctness.
+### Tuning var_smoothing
+
+```python
+for s in [1e-12, 1e-9, 1e-6, 1e-3]:
+    m = GaussianNB(var_smoothing=s)
+    m.fit(X_train, y_train)
+    print(f"var_smoothing={s:.0e} -> accuracy={m.score(X_train, y_train):.4f}")
+```
 
 ---
 
-## Notes
+## 12. Assumptions
 
-- **Single-pass training** — parameter estimation is a direct analytic calculation over the training data. There is no gradient descent, no learning rate, and no iteration count to tune.
-- **Feature scaling is not required** — unlike gradient-based models, GaussianNB is not sensitive to feature magnitude or range.
-- **String labels are fully supported** — `self.classes_` preserves original label types and maps predicted indices back to original labels via `classes_[argmax(...)]`.
-- **`fit()` returns `self`** — supports method chaining: `model.fit(X_train, y_train).score(X_test, y_test)`.
-- **Overconfident posteriors** — the naive independence assumption causes the model to produce extreme posterior values (close to 0 or 1). Use `predict_joint_log_proba` + softmax for calibration if probability estimates matter.
-- **Gaussian assumption** — if features are heavily skewed or multimodal, consider discretizing them and using `CategoricalNB`, or apply a log/power transform before fitting.
-- **Zero-frequency problem** — if a class has fewer samples than features, some variances may estimate to exactly zero. The `var_smoothing` parameter prevents division-by-zero in those cases.
+| # | Assumption | How to check |
+|---|-----------|--------------|
+| 1 | **Features are Gaussian within each class** | Plot per-class feature histograms against a fitted normal curve |
+| 2 | **Conditional independence** — features don't correlate given the class | Correlation matrix within each class |
+| 3 | **Enough samples per class** — mean/variance estimates need enough data to be stable | Check class sizes; very small classes get noisy estimates |
+| 4 | **Features are continuous** — this implementation assumes numeric, not categorical, features | Use `CategoricalNB`/`MultinomialNB`-style models instead for discrete features |
+
+> Naive Bayes tends to be robust even when the Gaussian assumption isn't perfect — what actually hurts it most is strong feature correlation, since it double-counts the same information.
+
+---
+
+## 13. Pros & Cons vs Logistic Regression & SVM
+
+| Criterion | **Gaussian NB** | **Logistic Regression** | **Linear SVM** |
+|-----------|------------------|--------------------------|-----------------|
+| Training | Closed-form, one pass | Iterative (gradient descent) | Iterative (sub-gradient descent) |
+| Decision boundary | Quadratic (generally curved) | Straight hyperplane | Straight hyperplane |
+| Output | Class probabilities | Class probabilities | Hard label (or distance to margin) |
+| Independence assumption | Yes (naive) | No | No |
+| Training speed | Very fast | Moderate | Moderate |
+| Works well with | Small datasets, many features (e.g. text) | General-purpose | Roughly linearly-separable data |
+| Feature scaling | Not required | Recommended | Strongly required |
+| sklearn equivalent | `GaussianNB` | `LogisticRegression` | `SGDClassifier(loss='hinge')` |
+
+**Rule of thumb:** reach for Naive Bayes as a fast baseline, especially with high-dimensional data or limited training samples; move to logistic regression or an SVM when feature correlation is strong or a linear boundary isn't a good enough fit.
+
+---
+
+## Dependencies
+
+```
+numpy >= 1.21
+matplotlib >= 3.4   # optional — for plotting only
+scipy >= 1.7        # optional — for the Gaussian PDF used in these visuals
+scikit-learn >= 1.0 # optional — only for the Iris demo dataset
+```
+
+---
+
+## License
+
+MIT
