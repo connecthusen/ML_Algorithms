@@ -1,452 +1,241 @@
-# Multinomial Naive Bayes Classifier
+# Multinomial Naive Bayes
 
-> A pure-NumPy implementation of **Multinomial Naive Bayes** — a probabilistic classifier grounded in Bayes' theorem designed for discrete count features. No scikit-learn under the hood.
+> A clean, **NumPy-only** implementation of Multinomial Naive Bayes.
+> Built for count data — word counts, term frequencies, any feature that represents "how many times something happened."
+> Same Bayes'-theorem foundation as Gaussian NB, but the likelihood is a **multinomial**, not a Gaussian.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Mathematical Foundation](#mathematical-foundation)
-- [Bayes Theorem & Decision Rule](#bayes-theorem--decision-rule)
-- [Parameter Estimation](#parameter-estimation)
-- [Log-Space Computation](#log-space-computation)
-- [Laplace Smoothing](#laplace-smoothing)
-- [Training Pipeline](#training-pipeline)
-- [The Naive Independence Assumption](#the-naive-independence-assumption)
-- [API Reference](#api-reference)
-- [Usage Examples](#usage-examples)
-- [Notes](#notes)
+1. [What is Multinomial Naive Bayes?](#1-what-is-multinomial-naive-bayes)
+2. [Bayes' Theorem](#2-bayes-theorem)
+3. [The Multinomial Likelihood](#3-the-multinomial-likelihood)
+4. [The Naive Independence Assumption](#4-the-naive-independence-assumption)
+5. [Training — Closed-Form, No Iteration](#5-training--closed-form-no-iteration)
+6. [Why Log-Space?](#6-why-log-space)
+7. [Laplace Smoothing](#7-laplace-smoothing)
+8. [Decision Boundary](#8-decision-boundary)
+9. [Training Pipeline](#9-training-pipeline)
+10. [Tuning alpha](#10-tuning-alpha)
+11. [Usage](#11-usage)
+12. [Assumptions](#12-assumptions)
+13. [Pros & Cons vs Gaussian NB & Logistic Regression](#13-pros--cons-vs-gaussian-nb--logistic-regression)
 
 ---
 
-## Overview
+## 1. What is Multinomial Naive Bayes?
 
-This module provides a from-scratch implementation of Multinomial Naive Bayes using **only NumPy**. It models each feature as a discrete count drawn from a multinomial distribution per class, and classifies new samples by computing the posterior log-probability of each class given the input feature vector.
+Multinomial NB is the version of Naive Bayes built for **count data** — the classic example is spam filtering, where each feature is "how many times word $j$ appeared in this document." Instead of assuming each feature is Gaussian (as in `GaussianNB`), it models the whole feature vector for a class as draws from a multinomial distribution over the vocabulary.
 
-| Aspect | Detail |
-|--------|--------|
-| **Likelihood model** | Multinomial distribution over discrete feature counts |
-| **Decision rule** | MAP — argmax of posterior log-probability |
-| **Computation** | Log-space throughout (numerical stability) |
-| **Smoothing** | Additive (Laplace/Lidstone) smoothing via `alpha` |
-| **Multi-class** | Supported natively for any number of classes |
-
----
-
-## Mathematical Foundation
-
-### Multinomial Probability
-
-The model assumes the feature vector `x = [x₁, x₂, …, xₚ]` represents **counts** (e.g., word frequencies in a document). Given a class `C`, each count `xⱼ` is modelled by the probability that class `C` generates feature `j`:
-
-```
-P(xⱼ | C) = θⱼ꜀
-```
-
-where `θⱼ꜀` is the probability of observing feature `j` in a document of class `C`, estimated from training data.
-
-Under the multinomial model, the full likelihood of a document `x` given class `C` is:
-
-```
-p(x | C) ∝ ∏ⱼ θⱼ꜀^xⱼ
-```
-
-The proportionality sign drops the multinomial coefficient `(Σxⱼ)! / ∏ⱼ xⱼ!` since it is constant across classes and does not affect the argmax.
-
-### The Naive Independence Assumption
-
-Under the **Naive Bayes** assumption, all features are treated as **conditionally independent** given the class label. The joint likelihood factorizes into a product of per-feature terms:
-
-```
-p(x | C) = ∏ⱼ P(xⱼ | C)  =  ∏ⱼ θⱼ꜀^xⱼ
-```
-
-This means instead of estimating a full joint distribution over all features, we only estimate one probability per feature per class — a total of `n_features × n_classes` parameters.
-
-![Multinomial Likelihood](01_multinomial_likelihood.png)
-
-The left plot shows the per-class word probabilities for two classes ("Tech" vs "Spam"). Words like "Python" and "Science" have high probability under Tech; "Buy" and "Deal" are typical of Spam. The right plot shows how the log-likelihoods of a specific document ("Python Python Python Neural Science") compare: Tech wins decisively because its word probabilities dominate the log-sum.
+| Symbol | Name | Meaning |
+|--------|------|---------|
+| $C$ | Class | The label being predicted |
+| $x_j$ | Feature $j$ | Count of word/token $j$ in a sample |
+| $P(C)$ | Prior | How common class $C$ is |
+| $P(x_j \mid C)$ | Per-feature probability | How often word $j$ shows up in class $C$'s documents |
+| $\alpha$ | Smoothing parameter | Prevents zero probabilities for unseen words |
 
 ---
 
-## Bayes Theorem & Decision Rule
+## 2. Bayes' Theorem
 
-### Posterior Probability
+$$P(C \mid x) = \frac{P(C) \cdot p(x \mid C)}{p(x)}$$
 
-Given an observation `x`, we want the class `C*` that maximizes the posterior:
+$p(x)$ is identical across classes, so classification only needs the numerator:
 
-```
-C* = argmax_C  P(C | x)
-```
+$$P(C \mid x) \ \propto \ P(C) \cdot p(x \mid C)$$
 
-By Bayes' theorem:
+![Bayes Theorem: Prior x Likelihood -> Posterior](06_bayes_theorem.png)
 
-```
-P(C | x) = P(C) · p(x | C) / p(x)
-```
-
-Since `p(x)` is constant across all classes (it is the **evidence**), it does not affect the argmax and can be dropped:
-
-```
-C* = argmax_C  P(C) · p(x | C)
-```
-
-This is the **Maximum A Posteriori (MAP)** decision rule.
-
-### Joint Log-Probability
-
-Applying the naive independence assumption and taking logarithms to avoid numerical underflow:
-
-```
-log P(C | x)  ∝  log P(C)  +  Σⱼ xⱼ · log θⱼ꜀
-```
-
-This simplifies into an elegant matrix form:
-
-```
-joint_log_prob = X @ feature_log_prob_.T + class_log_prior_
-```
-
-where `X` is the `(n_samples, n_features)` count matrix. The final prediction is:
-
-```
-C* = argmax_C  { log P(C)  +  x · log θ꜀ }
-```
-
-![Bayes Theorem](06_bayes_theorem.png)
-
-The three panels illustrate how classification works step-by-step: **① Prior** — baseline class frequency in training data. **② Likelihood** — how probable the observed feature counts are under each class. **③ Posterior** — the product of prior and likelihood (normalized), from which the predicted class is the argmax.
+Sport starts with the highest prior (50%), but Tech's much stronger likelihood for this particular document flips the posterior decisively in Tech's favor.
 
 ---
 
-## Parameter Estimation
+## 3. The Multinomial Likelihood
 
-All parameters are estimated analytically from the training data — no gradient descent is needed.
+Given a document with word counts $x = (x_1, \ldots, x_p)$, the multinomial likelihood under class $C$ is:
 
-### Class Prior
+$$p(x \mid C) \ \propto \ \prod_{j=1}^{p} P(x_j \mid C)^{x_j}$$
 
-The prior probability of each class is estimated by its frequency in the training set:
+$P(x_j \mid C)$ is estimated as the fraction of all word occurrences in class $C$'s training documents that were word $j$:
 
-```
-P(C) = |{i : yᵢ = C}| / n_samples
-```
+$$P(x_j \mid C) = \frac{\text{count of word } j \text{ across all class-}C\text{ documents}}{\text{total word count across all class-}C\text{ documents}}$$
 
-### Per-Class Feature Probability
+![Multinomial Likelihood - Word Counts](01_multinomial_likelihood.png)
 
-The probability of feature `j` given class `C` is estimated as its proportion of the total word count within that class:
-
-```
-θⱼ꜀ = (Σ_{i : yᵢ=C} xᵢⱼ + α) / (Σ_{j'} Σ_{i : yᵢ=C} xᵢⱼ' + α · n_features)
-```
-
-The `α` term is the Laplace smoothing parameter — see [Laplace Smoothing](#laplace-smoothing) below.
-
-### Stored Attributes
-
-| Attribute | Shape | Description |
-|-----------|-------|-------------|
-| `self.feature_log_prob_` | `(n_classes, n_features)` | Log of per-class feature probabilities — `log θⱼ꜀` |
-| `self.class_log_prior_` | `(n_classes,)` | Log of class priors — `log P(C)` |
+**Left:** each class has its own word-probability profile — "Python" and "Neural" dominate Tech, "Buy" and "Deal" dominate Spam. **Right:** a new document's log-likelihood under each class is just a weighted sum of these per-word log-probabilities — whichever class scores highest wins.
 
 ---
 
-## Log-Space Computation
+## 4. The Naive Independence Assumption
 
-Multiplying raw probabilities across many features drives the value toward zero:
+Just like Gaussian NB, this model assumes each word's count is conditionally independent of every other word's count, given the class:
 
-```
-p(x | C) = ∏ⱼ θⱼ꜀^xⱼ  →  0   (floating-point underflow)
-```
+$$p(x \mid C) = \prod_{j=1}^{p} p(x_j \mid C)^{x_j}$$
 
-![Log-Space Stability](03_log_space_stability.png)
+![Naive Independence Assumption](07_independence_assumption.png)
 
-The left panel shows the raw probability product underflowing to exactly `0.0` after just 20–30 features — at that point all classes have identical (zero) likelihoods and the argmax is meaningless. The right panel shows the same computation in log-space: the sum stays finite and numerically well-conditioned regardless of dimensionality.
-
-**The fix:** convert to log-space and sum, rather than multiply raw probabilities:
-
-```
-log p(x | C)  =  Σⱼ xⱼ · log θⱼ꜀       [always finite]
-```
-
-This reduces to a fast matrix-vector product:
-
-```python
-joint_log_prob = X @ self.feature_log_prob_.T + self.class_log_prior_
-```
-
-The implementation computes joint log-probabilities throughout and never materializes raw probability products.
+**Left:** strongly correlated features (words that always co-occur) violate the assumption — the model effectively counts the same signal twice. **Right:** near-independent features match the assumption cleanly. In text data, some correlation between words is unavoidable (e.g. "machine" and "learning"), but the model tends to work well in practice regardless.
 
 ---
 
-## Laplace Smoothing
+## 5. Training — Closed-Form, No Iteration
 
-### The Zero-Count Problem
+For every class $c$:
 
-If a word never appears in the training documents of class `C`, its count is zero:
+$$P(x_j \mid c) = \frac{\left(\sum_{i \in c} x_{ij}\right) + \alpha}{\sum_{j'=1}^{p}\left[\left(\sum_{i \in c} x_{ij'}\right) + \alpha\right]}$$
 
-```
-θⱼ꜀ = 0   →   log θⱼ꜀ = −∞
-```
+$$P(c) = \frac{\text{number of samples in class } c}{\text{total samples}}$$
 
-A single unseen word makes the entire log-likelihood for that class negative infinity, no matter how well all other words match. The model becomes pathologically sensitive to vocabulary gaps.
-
-### Solution: Additive Smoothing
-
-A small constant `α` is added to every feature count before normalization:
-
-```
-θⱼ꜀  =  (count(j, C) + α) / (total_count(C) + α · n_features)
-```
-
-This is called **Laplace smoothing** (when `α = 1`) or **Lidstone smoothing** (for arbitrary `α > 0`). It ensures every feature has a non-zero probability, even if unseen in training.
-
-| `alpha` | Behaviour |
-|---------|-----------|
-| `0` | No smoothing — zero counts cause log(0) = −∞ |
-| `0.1` | Gentle smoothing — only rescues true zero-count features |
-| `1.0` (default) | Laplace smoothing — standard choice, safe for most tasks |
-| `2.0` | Stronger regularization — useful for very small training sets |
-| `10.0+` | Aggressive smoothing — pushes toward uniform distribution |
-
-![Laplace Smoothing](04_laplace_smoothing.png)
-
-The left plot shows how smoothing raises zero-count feature probabilities from exactly `0` to a small non-zero value, while barely affecting non-zero counts. The right plot shows that log-likelihood is highest for moderate `α` — very small values risk zero-probability crashes, and very large values distort the feature distribution toward uniform.
-
-![Accuracy vs Alpha](08_accuracy_vs_alpha.png)
-
-Accuracy is stable across a wide range of `alpha` values. It only degrades at extremely aggressive smoothing (`> 10`), where the added term begins to dominate the true count estimates. The default `alpha=1.0` sits safely in the flat, optimal region.
+Every parameter comes directly from counting — no gradient descent, no epochs.
 
 ---
 
-## Training Pipeline
+## 6. Why Log-Space?
 
-![Training Pipeline](02_training_pipeline.png)
+Multiplying many small per-word probabilities together underflows to exactly `0.0` once the vocabulary or document length grows.
 
-`fit()` performs a **single pass** over the training data — no iterative optimization:
+![Why Log-Space - Numerical Stability](03_log_space_stability.png)
 
-1. Inputs are cast to NumPy arrays; unique class labels are stored in `self.classes_`
-2. For each class `C`: filter samples, sum feature counts, count class samples
-3. Apply Laplace smoothing: add `α` to every feature count; add `α × n_features` to each class total
-4. Compute log probabilities: `feature_log_prob_` and `class_log_prior_` are stored and used by `predict`, `predict_joint_log_proba`, and `score`
+Working in log-space turns the product into a sum, computed in one shot via:
 
-### Fit step-by-step
+$$\log p(x \mid C) = x \cdot \log P(\cdot \mid C)^{T}$$
 
-For each class `C`:
-
-1. Filter: `X_c = X[y == C]` — shape `(nᴄ, n_features)`
-2. Sum: `feature_count[C] = sum(X_c, axis=0)` — shape `(n_features,)`
-3. Class count: `class_count[C] = nᴄ`
-
-After all classes:
-
-4. Smooth: `smoothed_fc = feature_count + α`; `smoothed_cc = smoothed_fc.sum(axis=1, keepdims=True)`
-5. Log probabilities: `feature_log_prob_ = log(smoothed_fc) − log(smoothed_cc)`
-6. Prior: `class_log_prior_ = log(class_count / n_samples)`
-
-### Predict step-by-step
-
-For each test document `x` (a count vector):
-
-1. Joint log-probability: `log_joint = X @ feature_log_prob_.T + class_log_prior_`
-2. Predicted class: `argmax_C log_joint[C]`
+— a single dot product between the count vector and the class's log-probability vector, which is exactly what `predict_joint_log_proba` computes.
 
 ---
 
-## The Naive Independence Assumption
+## 7. Laplace Smoothing
 
-The "naive" in Naive Bayes refers to the assumption that all features are conditionally independent given the class. In text classification, this means the presence of one word does not affect the probability of another — which is clearly violated in practice ("machine" and "learning" co-occur far more than chance).
+Any word that never appeared in a class's training documents gets $P(x_j \mid C) = 0$ — and since the likelihood is a *product*, one zero would make the entire document's probability zero for that class, no matter how well the other words fit. `alpha` fixes this by adding a small constant count to every word before normalising:
 
-![Independence Assumption](07_independence_assumption.png)
+$$P(x_j \mid c) = \frac{\text{count}(x_j, c) + \alpha}{\sum_{j'}\left[\text{count}(x_{j'}, c) + \alpha\right]}$$
 
-**Left:** Strongly correlated features. Here the joint distribution `p(x₁, x₂ | C)` is not separable into `p(x₁ | C) · p(x₂ | C)`. Naive Bayes misrepresents the true class-conditional density. **Right:** Approximately independent features — the naive assumption holds, and the model performs well.
+![Effect of Laplace Smoothing on Zero-Count Features](04_laplace_smoothing.png)
 
-> **Despite the violated assumption, Multinomial Naive Bayes is remarkably competitive in practice** — especially in text classification. What matters for classification is not accurate probability estimates, but the correct argmax. The model is overconfident (posteriors close to 0 or 1), but the predicted class is frequently correct.
-
-### When to use Multinomial Naive Bayes
-
-| Condition | Suitable? |
-|-----------|-----------|
-| Features are discrete non-negative counts (e.g., word frequencies) | ✅ Ideal |
-| Text classification (spam, sentiment, topic labelling) | ✅ Classic use case |
-| High-dimensional sparse input (large vocabularies) | ✅ Scales very well |
-| Features are continuous or can be negative | ❌ Use Gaussian NB |
-| Features are binary presence/absence | ⚠ Consider Bernoulli NB |
-| Very small training sets | ✅ Reliable — few parameters to estimate |
-| Heavy feature correlation | ⚠ May produce overconfident posteriors |
+**Left:** words with zero training counts (w3, w5) get a small non-zero probability instead of exactly zero. **Right:** larger `alpha` pulls every class toward a uniform word distribution, which lowers the training log-likelihood — `alpha` trades a perfect fit on seen data for the ability to handle unseen words gracefully.
 
 ---
 
-## Decision Boundary
+## 8. Decision Boundary
 
-![Decision Boundary](05_decision_boundary.png)
+![Decision Boundary - 2 word-count features](05_decision_boundary.png)
 
-Unlike Gaussian Naive Bayes, Multinomial Naive Bayes produces **linear** decision boundaries in the feature space — because the log-posterior is a linear function of the feature counts `x`:
-
-```
-log P(C | x)  ∝  x · log θ꜀  +  log P(C)
-```
-
-This is linear in `x`. The decision boundary between classes C₁ and C₂ is the set of points where:
-
-```
-x · (log θ꜀₁ − log θ꜀₂)  +  log P(C₁) − log P(C₂)  =  0
-```
-
-This is a hyperplane in feature space. The left plot shows this linear boundary in 2D word-count space; the right plot shows the continuous posterior probability — the model transitions sharply, reflecting the overconfident nature of the naive independence assumption.
+**Left:** the boundary between two classes defined by two word-count features — points with more of feature 2 relative to feature 1 fall into class 0, and vice versa. **Right:** the same boundary expressed as a smooth posterior probability surface — confidence is highest far from the boundary and approaches 0.5 right at the decision edge.
 
 ---
 
-## API Reference
+## 9. Training Pipeline
 
-### Constructor
+![MultinomialNB Training Pipeline](02_training_pipeline.png)
 
-`MultinomialNB(alpha=1.0)`
+The full `fit()` flow, computed once in a single pass:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `alpha` | `float` | `1.0` | Additive (Laplace/Lidstone) smoothing parameter — set to `0` for no smoothing |
-
-### Methods
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `fit(X_train, y_train)` | `self` | Estimate per-class feature log-probabilities and class log-priors |
-| `predict_joint_log_proba(X_test)` | `ndarray` | Joint log-probabilities `(n_samples, n_classes)` |
-| `predict(X_test)` | `ndarray` | Predicted class labels `(n_samples,)` |
-| `score(X_test, y_test)` | `float` | Mean accuracy on test data |
-
-### Attributes (after `fit`)
-
-| Attribute | Shape | Description |
-|-----------|-------|-------------|
-| `self.classes_` | `(n_classes,)` | Unique class labels from `y_train` |
-| `self.feature_log_prob_` | `(n_classes, n_features)` | Log of per-class feature probabilities `log θⱼ꜀` |
-| `self.class_log_prior_` | `(n_classes,)` | Log prior `log P(C)` for each class |
-
-### Internal Methods
-
-| Method | Description |
-|--------|-------------|
-| `_joint_log_proba(X)` | Computes `X @ feature_log_prob_.T + class_log_prior_` for all samples |
+| Step | Operation | Stored as |
+|------|-----------|-----------|
+| 1–2 | Cast inputs, identify unique classes | `classes_` |
+| 3 | Sum feature counts per class | `feature_count` |
+| 4 | Add Laplace smoothing | `smoothed_fc` |
+| 5 | Normalise into log word-probabilities | `feature_log_prob_` |
+| 6 | Compute log class priors | `class_log_prior_` |
 
 ---
 
-## Usage Examples
+## 10. Tuning alpha
 
-### Basic Classification — 20 Newsgroups (Text)
+![Accuracy vs Laplace Smoothing Parameter alpha](08_accuracy_vs_alpha.png)
 
-```python
-from sklearn.datasets import fetch_20newsgroups
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split
+Cross-validated accuracy is essentially flat across many orders of magnitude of `alpha` — it mostly matters when the vocabulary is large relative to the training set, where zero-count words are common. The default `alpha=1.0` is a safe general-purpose choice.
 
-cats = ['sci.space', 'rec.sport.hockey', 'talk.politics.guns']
-data = fetch_20newsgroups(subset='all', categories=cats)
-X_counts = CountVectorizer().fit_transform(data.data)
+---
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X_counts, data.target, test_size=0.2, random_state=42
-)
+## 11. Usage
 
-model = MultinomialNB()
-model.fit(X_train, y_train)
-
-print(f"Accuracy:  {model.score(X_test, y_test):.4f}")   # ~0.9700
-print(f"Classes:   {model.classes_}")                     # [0 1 2]
-print(f"Vocab dim: {model.feature_log_prob_.shape}")      # (3, n_vocab)
-```
-
-### Custom Smoothing
-
-```python
-# Very gentle smoothing — zero counts still become log(0)=-inf for unseen words
-model = MultinomialNB(alpha=0.01)
-model.fit(X_train, y_train)
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")
-
-# No smoothing — crashes on unseen vocabulary
-model = MultinomialNB(alpha=0.0)
-model.fit(X_train, y_train)
-# log(0) = -inf for any word not in training set for a class
-
-# Stronger smoothing — useful for very small training sets
-model = MultinomialNB(alpha=2.0)
-model.fit(X_train, y_train)
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")
-```
-
-### Inspecting Joint Log-Probabilities
-
-```python
-model = MultinomialNB()
-model.fit(X_train, y_train)
-
-log_probs = model.predict_joint_log_proba(X_test[:5])
-print(log_probs)
-# [[-213.1, -1042.3, -887.4],   ← class 0 (sci.space) — clear winner
-#  [-198.4,  -901.8, -823.0],   ← class 0 (sci.space)
-#  [-876.2,   -189.5, -654.3],  ← class 1 (rec.sport.hockey)
-#  [-934.1,   -731.0, -210.7],  ← class 2 (talk.politics.guns)
-#  [-820.0,   -204.3, -699.1]]  ← class 1 (rec.sport.hockey)
-```
-
-> The log-probability values are **not normalized** — they are joint log-probabilities, not true posteriors. For calibrated probabilities, apply `scipy.special.softmax` along `axis=1`.
-
-### Multi-class with String Labels
+### Basic fit and predict
 
 ```python
 import numpy as np
+from MultinomialNB import MultinomialNB
 
-# Bag-of-words counts: [python_count, neural_count, buy_count, deal_count]
+# rows = documents, columns = word counts
 X_train = np.array([
-    [5, 3, 0, 0],
-    [4, 5, 0, 1],
-    [0, 0, 8, 7],
-    [1, 0, 6, 9],
-    [3, 4, 0, 0],
-    [0, 1, 7, 5],
+    [5, 4, 1, 0, 6, 0],   # tech-heavy document
+    [4, 3, 1, 1, 5, 0],   # tech-heavy document
+    [0, 0, 4, 6, 1, 7],   # spam-heavy document
+    [1, 0, 3, 7, 0, 6],   # spam-heavy document
 ])
-y_train = np.array(['tech', 'tech', 'spam', 'spam', 'tech', 'spam'])
-
-model = MultinomialNB()
-model.fit(X_train, y_train)
-
-X_new = np.array([[4, 2, 0, 0], [0, 0, 9, 6]])
-print(model.predict(X_new))   # ['tech', 'spam']
-print(model.classes_)         # ['spam', 'tech']
-```
-
-### Binary Classification — Spam Detection
-
-```python
-from sklearn.datasets import load_files
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split
-
-# Any binary text corpus: spam vs ham, positive vs negative, etc.
-vectorizer = CountVectorizer(stop_words='english', max_features=5000)
-X = vectorizer.fit_transform(corpus)
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+y_train = np.array(["Tech", "Tech", "Spam", "Spam"])
 
 model = MultinomialNB(alpha=1.0)
 model.fit(X_train, y_train)
 
-print(f"Accuracy: {model.score(X_test, y_test):.4f}")   # typically 0.95–0.99
+print(f"Classes         : {model.classes_}")
+print(f"Log word probs  : {model.feature_log_prob_}")
+print(f"Log class prior : {model.class_log_prior_}")
+print(model)
+
+X_test = np.array([[3, 0, 0, 0, 1, 0]])   # mostly "Python" and "Science"
+print(f"Prediction      : {model.predict(X_test)}")
+print(f"Accuracy        : {model.score(X_train, y_train):.4f}")
 ```
 
-> **Note:** Feature scaling (`StandardScaler`) must **not** be applied to Multinomial Naive Bayes — the model requires non-negative integer counts. Normalizing to zero mean produces negative values that violate the multinomial assumption.
+### Inspecting joint log-probabilities
+
+```python
+log_proba = model.predict_joint_log_proba(X_test)
+print(log_proba)   # shape (n_samples, n_classes) — higher is more likely
+```
+
+### Tuning alpha
+
+```python
+for a in [0.01, 0.1, 1.0, 5.0]:
+    m = MultinomialNB(alpha=a)
+    m.fit(X_train, y_train)
+    print(f"alpha={a:>5} -> accuracy={m.score(X_train, y_train):.4f}")
+```
 
 ---
 
-## Notes
+## 12. Assumptions
 
-- **Single-pass training** — parameter estimation is a direct analytic summation over the training data. There is no gradient descent, no learning rate, and no iteration count to tune.
-- **Non-negative integer inputs required** — `X_train` must contain non-negative counts. Negative values or floats from `StandardScaler` will produce incorrect results (use `TfidfTransformer` or `CountVectorizer` instead).
-- **String labels are fully supported** — `self.classes_` preserves original label types and maps predicted indices back to original labels via `classes_[argmax(...)]`.
-- **`fit()` returns `self`** — supports method chaining: `model.fit(X_train, y_train).score(X_test, y_test)`.
-- **Overconfident posteriors** — the naive independence assumption causes the model to produce extreme posterior values (close to 0 or 1). Use `predict_joint_log_proba` + softmax for calibration if probability estimates matter.
-- **Multinomial vs Bernoulli** — `MultinomialNB` uses raw counts (how many times a word appears); `BernoulliNB` uses binary presence/absence (whether a word appears at all). For long documents, Multinomial generally outperforms Bernoulli.
-- **Zero-frequency problem** — if a feature never appears in training documents of a class, `alpha=0` produces `log(0) = −∞`, which makes the entire class log-probability `−∞`. Always use `alpha > 0`.
-- **Fast matrix prediction** — `predict_joint_log_proba` reduces to a single matrix multiplication `X @ feature_log_prob_.T`, making inference very fast even for large vocabularies.
+| # | Assumption | How to check |
+|---|-----------|--------------|
+| 1 | **Features are counts** — non-negative integers representing frequency | Not suitable for raw continuous measurements (use `GaussianNB` instead) |
+| 2 | **Conditional independence** — word counts don't correlate given the class | Correlation between features within each class |
+| 3 | **Bag-of-words style data** — word order doesn't matter, only frequency | True for classic text classification, not for order-sensitive tasks |
+| 4 | **Vocabulary seen in training generalises** — `alpha` is tuned, not ignored | Cross-validate over a range of `alpha` |
+
+> Word counts that are extremely skewed by document length can distort the likelihood — normalising by document length (TF or TF-IDF weighting) before fitting is a common preprocessing step in practice.
+
+---
+
+## 13. Pros & Cons vs Gaussian NB & Logistic Regression
+
+| Criterion | **Multinomial NB** | **Gaussian NB** | **Logistic Regression** |
+|-----------|----------------------|-------------------|---------------------------|
+| Feature type | Counts / frequencies | Continuous, Gaussian-ish | Continuous or encoded categorical |
+| Training | Closed-form, one pass | Closed-form, one pass | Iterative (gradient descent) |
+| Typical use case | Text classification, spam filtering | Sensor/measurement data | General-purpose |
+| Handles zero counts | Yes, via `alpha` smoothing | N/A (uses variance smoothing instead) | N/A |
+| Decision boundary | Log-linear in counts | Quadratic (curved) | Straight hyperplane |
+| Feature scaling | Not required | Not required | Recommended |
+| sklearn equivalent | `MultinomialNB` | `GaussianNB` | `LogisticRegression` |
+
+**Rule of thumb:** use Multinomial NB whenever your features are counts (words, n-grams, event tallies); reach for Gaussian NB when features are continuous measurements instead.
+
+---
+
+## Dependencies
+
+```
+numpy >= 1.21
+matplotlib >= 3.4   # optional — for plotting only
+```
+
+---
+
+## License
+
+MIT
