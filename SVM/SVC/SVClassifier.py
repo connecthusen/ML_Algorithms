@@ -143,8 +143,7 @@ class SVClassifier:
                 f"  intercept_={self.intercept_}\n"
                 f")")
 
-    # ── kernels ───────────────────────────────────────────────────────────────
-
+    # kernels
     def _kernel_matrix(self, X1, X2):
         if self.kernel == 'linear':
             return X1 @ X2.T
@@ -163,7 +162,7 @@ class SVClassifier:
 
         raise ValueError(f"Unknown kernel: {self.kernel!r}")
 
-    # ── SMO ───────────────────────────────────────────────────────────────────
+    # SMO
 
     def _smo(self, K, y, m):
         """
