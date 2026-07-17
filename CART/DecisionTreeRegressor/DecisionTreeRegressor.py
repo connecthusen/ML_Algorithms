@@ -2,16 +2,16 @@ import numpy as np
 
 
 class CreateNode:
-    """Single node in the regression tree."""
+    """Single node in the regression decision tree."""
 
     def __init__(self, feature=None, threshold=None, feature_type=None,
                  left=None, right=None, value=None):
-        self.feature      = feature       # feature index to split on
-        self.threshold    = threshold     # split value
-        self.feature_type = feature_type  # 'numeric' or 'categorical'
-        self.left         = left          # left child node
-        self.right        = right         # right child node
-        self.value        = value         # leaf prediction (mean of samples)
+        self.feature      = feature
+        self.threshold    = threshold
+        self.feature_type = feature_type
+        self.left         = left
+        self.right        = right
+        self.value        = value   # leaf mean — set only if leaf
 
     def is_leaf(self):
         return self.value is not None
@@ -24,28 +24,27 @@ class CreateNode:
 
 class DecisionTreeRegressor:
     """
-    Decision Tree Regressor supporting numeric and categorical features.
-    Splits using Variance Reduction (MSE-based information gain).
+    Decision Tree Regressor — predicts continuous targets.
+    Splits using Variance Reduction (MSE or MAE) at each node.
 
     Parameters
     ----------
-    max_depth         : int,   default=None — maximum tree depth (None = grow fully)
-    min_samples_split : int,   default=2    — minimum samples required to split a node
-    min_impurity_decrease : float, default=0.0 — minimum variance reduction to split
+    max_depth         : int,   default=None  — maximum tree depth
+    min_samples_split : int,   default=2     — minimum samples to split a node
+    criterion         : str,   default='mse' — 'mse' or 'mae'
 
     Attributes
     ----------
-    root      : CreateNode — root node of the fitted tree
-    n_features_: int       — number of features seen during fit
+    root       : CreateNode — root node of the fitted tree
+    n_features_: int        — number of input features
     """
 
-    def __init__(self, max_depth=None, min_samples_split=2,
-                 min_impurity_decrease=0.0):
-        self.max_depth             = max_depth
-        self.min_samples_split     = min_samples_split
-        self.min_impurity_decrease = min_impurity_decrease
-        self.root                  = None
-        self.n_features_           = None
+    def __init__(self, max_depth=None, min_samples_split=2, criterion='mse'):
+        self.max_depth         = max_depth
+        self.min_samples_split = min_samples_split
+        self.impurity          = criterion
+        self.root              = None
+        self.n_features_       = None
 
     def fit(self, X_train, y_train):
         """
@@ -53,13 +52,13 @@ class DecisionTreeRegressor:
             X_train : (n_samples, n_features)
             y_train : (n_samples,)
         """
-        X = np.asarray(X_train)
+        X = np.asarray(X_train, dtype=np.float64)
         y = np.asarray(y_train, dtype=np.float64).ravel()
 
         if X.ndim != 2:
             raise ValueError(f"X_train must be 2D, got shape {X.shape}")
         if X.shape[0] != y.shape[0]:
-            raise ValueError(f"X_train and y_train sample count mismatch.")
+            raise ValueError("X_train and y_train sample count mismatch.")
 
         self.n_features_ = X.shape[1]
         self.root        = self._build_tree(X, y, depth=0)
@@ -74,7 +73,7 @@ class DecisionTreeRegressor:
         if self.root is None:
             raise RuntimeError("Call fit() before predict().")
 
-        X = np.asarray(X_test)
+        X = np.asarray(X_test, dtype=np.float64)
         return np.array([self._traverse(x, self.root) for x in X])
 
     def score(self, X_test, y_test):
@@ -85,14 +84,14 @@ class DecisionTreeRegressor:
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
 
-        return 1 - (ss_res / ss_tot)   # R² = 1 - SS_res/SS_tot
+        return 1 - (ss_res / ss_tot)   # R² = 1 - SS_res / SS_tot
 
     def __repr__(self):
         if self.root is None:
-            return (f"DecisionTreeRegressor("
-                    f"max_depth={self.max_depth}, "
-                    f"min_samples_split={self.min_samples_split})")
+            return (f"DecisionTreeRegressor(criterion={self.impurity!r}, "
+                    f"max_depth={self.max_depth})")
         return (f"DecisionTreeRegressor(\n"
+                f"  criterion={self.impurity!r},\n"
                 f"  max_depth={self.max_depth},\n"
                 f"  min_samples_split={self.min_samples_split},\n"
                 f"  n_features_={self.n_features_}\n"
@@ -101,22 +100,21 @@ class DecisionTreeRegressor:
     # ── tree building ─────────────────────────────────────────────────────────
 
     def _build_tree(self, X, y, depth):
-        # leaf: too few samples
-        if len(y) < self.min_samples_split:
-            return CreateNode(value=float(np.mean(y)))
+        leaf_value = np.mean(y)   # leaf predicts mean of samples
 
-        # leaf: max depth reached
+        # stopping conditions
+        if len(y) < self.min_samples_split:
+            return CreateNode(value=leaf_value)
         if self.max_depth is not None and depth >= self.max_depth:
-            return CreateNode(value=float(np.mean(y)))
+            return CreateNode(value=leaf_value)
 
         best_feature, best_threshold, best_feature_type, best_gain = \
             self._find_best_split(X, y)
 
-        # leaf: no beneficial split found
-        if best_gain <= self.min_impurity_decrease:
-            return CreateNode(value=float(np.mean(y)))
+        if best_gain <= 0:
+            return CreateNode(value=leaf_value)
 
-        # split data
+        # split data into left and right subsets
         if best_feature_type == 'numeric':
             left_mask  = X[:, best_feature] <= best_threshold
             right_mask = X[:, best_feature] >  best_threshold
@@ -145,7 +143,6 @@ class DecisionTreeRegressor:
             column = X[:, feature]
 
             if np.issubdtype(column.dtype, np.number):
-                # numeric — try every unique value as threshold
                 for threshold in np.unique(column):
                     left_mask  = column <= threshold
                     right_mask = column >  threshold
@@ -161,7 +158,6 @@ class DecisionTreeRegressor:
                         best_threshold    = threshold
                         best_feature_type = 'numeric'
             else:
-                # categorical — try each category as a binary split
                 for category in np.unique(column):
                     left_mask  = column == category
                     right_mask = column != category
@@ -179,27 +175,37 @@ class DecisionTreeRegressor:
 
         return best_feature, best_threshold, best_feature_type, best_gain
 
-    # ── impurity measure ──────────────────────────────────────────────────────
+    # ── impurity measures ─────────────────────────────────────────────────────
 
     def _mse(self, y):
-        # MSE around the mean — used as node impurity
+        # mean squared deviation from the mean
         if len(y) == 0:
             return 0.0
         return float(np.mean((y - np.mean(y)) ** 2))
 
+    def _mae(self, y):
+        # mean absolute deviation from the median
+        if len(y) == 0:
+            return 0.0
+        return float(np.mean(np.abs(y - np.median(y))))
+
+    def _impurity_fn(self, y):
+        if self.impurity == 'mae':
+            return self._mae(y)
+        return self._mse(y)
+
     def _variance_reduction(self, y_parent, y_left, y_right):
-        # VR = MSE(parent) - weighted avg MSE(children)
+        # VR = impurity(parent) - weighted avg impurity(children)
         n  = len(y_parent)
         nl = len(y_left)
         nr = len(y_right)
-        return (self._mse(y_parent)
-                - (nl / n) * self._mse(y_left)
-                - (nr / n) * self._mse(y_right))
+        return (self._impurity_fn(y_parent)
+                - (nl / n) * self._impurity_fn(y_left)
+                - (nr / n) * self._impurity_fn(y_right))
 
     # ── prediction ────────────────────────────────────────────────────────────
 
     def _traverse(self, x, node):
-        # walk tree until leaf — return leaf mean
         if node.is_leaf():
             return node.value
 
