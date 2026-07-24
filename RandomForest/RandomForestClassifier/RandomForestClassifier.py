@@ -19,9 +19,6 @@ class CreateNode:
 
 class DecisionTree:
     """
-    Single Decision Tree used inside Random Forest.
-    Trains on a bootstrap sample with random feature subsets.
-
     Parameters
     ----------
     max_depth         : int   — maximum tree depth
@@ -117,10 +114,6 @@ class DecisionTree:
 
 class RandomForestClassifier:
     """
-    Random Forest Classifier — ensemble of Decision Trees.
-    Each tree trains on a bootstrap sample with random feature subsets.
-    Final prediction = majority vote across all trees.
-
     Parameters
     ----------
     n_estimators      : int,   default=100  — number of trees
@@ -188,7 +181,7 @@ class RandomForestClassifier:
             tree.fit(X_boot, y_boot)
             self.trees_.append(tree)
 
-        return self
+        return self`
 
     def predict(self, X_test):
         """
