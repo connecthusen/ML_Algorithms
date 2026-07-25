@@ -1,318 +1,355 @@
-# Random Forest Classifier — Ensemble of Decision Trees
+# Decision Tree Regressor — MSE & MAE Variance Reduction
 
-> A clean, **NumPy-only** implementation of Random Forest Classification.  
-> Trains multiple Decision Trees on **bootstrap samples** with **random feature subsets** —  
-> final prediction is the **majority vote** across all trees.  
-> More robust and accurate than a single tree — reduces overfitting through ensemble averaging.
+> A clean, **NumPy-only** implementation of Decision Tree Regression  
+> supporting **numeric and categorical features**, two split criteria — **MSE and MAE** —  
+> and **recursive tree building** with configurable depth and minimum sample constraints.  
+> Each leaf predicts the **mean of its training samples** — no closed-form, no gradient descent.
 
 ---
 
 ## Table of Contents
 
-1. [What is Random Forest?](#1-what-is-random-forest)
+1. [What is a Decision Tree Regressor?](#1-what-is-a-decision-tree-regressor)
 2. [The Model](#2-the-model)
-3. [Bootstrap Sampling](#3-bootstrap-sampling)
-4. [Random Feature Subsets](#4-random-feature-subsets)
-5. [Voting & Prediction](#5-voting--prediction)
-6. [Geometric Intuition](#6-geometric-intuition)
-7. [Decision Boundary](#7-decision-boundary)
-8. [Single Tree vs Forest](#8-single-tree-vs-forest)
-9. [Build Pipeline](#9-build-pipeline)
-10. [Predicted vs Actual](#10-predicted-vs-actual)
-11. [Effect of n_estimators](#11-effect-of-n_estimators)
-12. [Feature Importance](#12-feature-importance)
-13. [Confusion Matrix & Metrics](#13-confusion-matrix--metrics)
-14. [Usage](#14-usage)
-15. [Assumptions](#15-assumptions)
+3. [Split Criterion — Variance Reduction](#3-split-criterion--variance-reduction)
+4. [Impurity Measures](#4-impurity-measures)
+5. [Splitting Strategy](#5-splitting-strategy)
+6. [Stopping Conditions](#6-stopping-conditions)
+7. [Geometric Intuition](#7-geometric-intuition)
+8. [Best-Fit & Residuals](#8-best-fit--residuals)
+9. [Variance Reduction Visualised](#9-variance-reduction-visualised)
+10. [Build Pipeline](#10-build-pipeline)
+11. [Regression Diagnostics](#11-regression-diagnostics)
+12. [Predicted vs Actual](#12-predicted-vs-actual)
+13. [Effect of max_depth](#13-effect-of-max_depth)
+14. [Understanding R²](#14-understanding-r)
+15. [Usage](#15-usage)
+16. [Assumptions](#16-assumptions)
 
 ---
 
-## 1. What is Random Forest?
+## 1. What is a Decision Tree Regressor?
 
-Random Forest is an **ensemble** method that trains many Decision Trees independently and combines their predictions via majority vote.
+A Decision Tree Regressor recursively partitions the feature space into rectangular regions and assigns each region the **mean target value** of training samples that fall within it.
 
-Given $n$ observations $(\mathbf{x}_1, y_1), \ldots, (\mathbf{x}_n, y_n)$:
+Given $n$ observations $(\mathbf{x}_1, y_1), \ldots, (\mathbf{x}_n, y_n)$ with continuous $y$:
 
-$$\hat{y} = \text{majority\_vote}\!\left(\hat{y}^{(1)}, \hat{y}^{(2)}, \ldots, \hat{y}^{(T)}\right)$$
-
-where $\hat{y}^{(t)}$ is the prediction of tree $t$.
+$$\hat{y} = \text{mean}\!\left(\{y_i : \mathbf{x}_i \text{ falls in leaf region}\}\right)$$
 
 | Symbol | Name | Meaning |
 |--------|------|---------|
-| $T$ | `n_estimators` | Number of trees in the forest |
-| $B$ | Bootstrap sample | Random sample with replacement — same size as training set |
-| $k$ | `max_features` | Number of features considered at each split |
-| `'sqrt'` | Default strategy | $k = \lfloor\sqrt{p}\rfloor$ — standard for classification |
-| `'log2'` | Alternative | $k = \lfloor\log_2 p\rfloor$ — more aggressive feature reduction |
+| `feature` | Split feature index | Which column to split on |
+| `threshold` | Split value | Numeric: $\leq t$ / $> t$ — Categorical: $= c$ / $\neq c$ |
+| `max_depth` | Tree depth limit | Prevents overfitting |
+| `min_samples_split` | Minimum split size | Nodes with fewer samples become leaves |
+| `criterion` | Split measure | `'mse'` or `'mae'` |
 
-Two sources of randomness — what makes each tree different:
+Two node types:
 
-| Source | What it does |
-|--------|-------------|
-| **Bootstrap sampling** | Each tree sees a different random subset of training rows |
-| **Random feature subsets** | Each split only considers $k$ random features — not all $p$ |
+| Node | Condition | Contains |
+|------|-----------|---------|
+| **Internal node** | `value is None` | `feature`, `threshold`, `left`, `right` |
+| **Leaf node** | `value is not None` | Mean of $y$ values in that region |
 
 ---
 
 ## 2. The Model
 
-Each tree $t$ is trained independently:
+The tree is a recursive structure of `CreateNode` objects:
 
-1. Draw a **bootstrap sample** $D^{(t)}$ of size $n$ from $D$ with replacement
-2. Fit a `DecisionTree` on $D^{(t)}$ using random feature subsets at each split
-3. Store the fitted tree in `self.trees_`
+```
+root
+├── Node(feature=0, threshold=3.5)
+│   ├── Leaf(value=2.14)
+│   └── Node(feature=0, threshold=6.2)
+│       ├── Leaf(value=4.87)
+│       └── Leaf(value=7.31)
+```
 
-At prediction time, each tree votes and the majority wins:
+Prediction traverses from root to leaf:
 
-$$\hat{y} = \arg\max_k \sum_{t=1}^{T} \mathbf{1}[\hat{y}^{(t)} = k]$$
+$$\hat{y} = \text{traverse}(\mathbf{x}, \text{root})$$
 
-Probability estimates use vote fractions:
-
-$$P(y = k \mid \mathbf{x}) = \frac{1}{T}\sum_{t=1}^{T} \mathbf{1}[\hat{y}^{(t)} = k]$$
-
----
-
-## 3. Bootstrap Sampling
-
-Each tree trains on a **bootstrap sample** — $n$ samples drawn with replacement from the original $n$ training points:
-
-$$D^{(t)} = \{(\mathbf{x}_{i_1}, y_{i_1}), \ldots, (\mathbf{x}_{i_n}, y_{i_n})\}, \quad i_j \sim \text{Uniform}(1, n)$$
-
-On average, each bootstrap sample contains about **63.2%** of unique training points — the rest (~36.8%) are repeated. The unused points are called **Out-of-Bag (OOB)** samples and can be used for free validation.
-
-This diversity in training data ensures trees make different errors — and their errors cancel out when voting.
+At each internal node:
+- **Numeric:** go left if $x[\text{feature}] \leq \text{threshold}$, else right
+- **Categorical:** go left if $x[\text{feature}] = \text{threshold}$, else right
 
 ---
 
-## 4. Random Feature Subsets
+## 3. Split Criterion — Variance Reduction
 
-At every split in every tree, only $k$ randomly chosen features are considered:
+At each node, the best split maximises the **Variance Reduction**:
 
-| `max_features` | $k$ | When to use |
-|---------------|-----|------------|
-| `'sqrt'` | $\lfloor\sqrt{p}\rfloor$ | Default — good for most classification problems |
-| `'log2'` | $\lfloor\log_2 p\rfloor$ | More aggressive — high-dimensional data |
-| `int` | fixed $k$ | Manual control |
-| `None` | $p$ (all features) | Equivalent to Bagged Trees — no feature randomness |
+$$\text{VR}(y, \text{split}) = \text{Impurity}(y_\text{parent}) - \frac{|y_\text{left}|}{|y|}\,\text{Impurity}(y_\text{left}) - \frac{|y_\text{right}|}{|y|}\,\text{Impurity}(y_\text{right})$$
 
-This feature randomness **decorrelates** the trees — even if one feature is very strong, different trees will use different features for their splits, reducing variance.
+A split with $\text{VR} \leq 0$ is rejected — the node becomes a leaf predicting $\text{mean}(y)$.
 
 ---
 
-## 5. Voting & Prediction
+## 4. Impurity Measures
 
-**Hard vote** — `predict()`:
+### MSE (Mean Squared Error) — default
 
-$$\hat{y} = \text{mode}\!\left(\hat{y}^{(1)}, \hat{y}^{(2)}, \ldots, \hat{y}^{(T)}\right)$$
+$$\text{MSE}(y) = \frac{1}{|y|}\sum_{i}(y_i - \bar{y})^2$$
 
-**Soft vote** — `predict_proba()`:
+- Measures variance of $y$ values around their mean
+- Zero for a perfectly homogeneous leaf (all $y_i$ identical)
+- Sensitive to outliers — squaring amplifies large deviations
 
-$$P(k \mid \mathbf{x}) = \frac{\text{number of trees predicting class } k}{T}$$
+### MAE (Mean Absolute Error)
 
-Soft voting gives more calibrated confidence estimates — useful when the downstream task needs probabilities, not just class labels.
+$$\text{MAE}(y) = \frac{1}{|y|}\sum_{i}|y_i - \text{median}(y)|$$
 
----
+- Measures spread around the **median** instead of mean
+- More robust to outliers — linear penalty instead of quadratic
+- Slightly slower to compute
 
-## 6. Geometric Intuition
-
-A single deep Decision Tree produces jagged, overfitted boundaries — it memorises the training data.
-
-Random Forest smooths this out:
-- Each tree sees different data → different boundaries
-- Averaging many jagged boundaries → smoother, more robust boundary
-- Increasing $T$ reduces variance — the ensemble prediction converges to the true Bayes boundary
-
-This is the **bias-variance tradeoff** in action: individual trees have low bias but high variance; averaging reduces variance while keeping bias low.
+**Rule of thumb:** use MSE for most problems. Switch to MAE when the target has heavy-tailed noise or outliers.
 
 ---
 
-## 7. Decision Boundary
+## 5. Splitting Strategy
 
-![Decision Boundary](01_decision_boundary.png)
+For each feature, candidate thresholds are evaluated:
+
+**Numeric features:**
+
+$$\text{Thresholds} = \text{unique values of } x_j$$
+
+Split: left if $x_j \leq t$, right if $x_j > t$
+
+**Categorical features:**
+
+$$\text{Categories} = \text{unique values of } x_j$$
+
+Split: left if $x_j = c$, right if $x_j \neq c$
+
+The feature-threshold pair with the highest Variance Reduction is chosen.
+
+---
+
+## 6. Stopping Conditions
+
+The recursive build stops and creates a **leaf node** when any of these are true:
+
+| Condition | Reason |
+|-----------|--------|
+| `len(y) < min_samples_split` | Too few samples to split further |
+| `depth >= max_depth` | Depth limit reached |
+| Best Variance Reduction $\leq 0$ | No split reduces impurity |
+
+Leaf prediction is always $\text{mean}(y)$ of the samples in that node.
+
+---
+
+## 7. Geometric Intuition
+
+Decision Tree Regressors partition the feature space with **axis-aligned rectangular splits** — each split is a horizontal or vertical cut.
+
+- Each leaf predicts a **constant value** (mean of its samples)
+- The overall prediction function is a **piecewise constant** approximation of the true function
+- Deep trees → more pieces → tighter approximation → risk of overfitting
+- Shallow trees → fewer pieces → smoother but higher bias
+
+---
+
+## 8. Best-Fit & Residuals
+
+![Best-Fit and Residuals](01_bestfit_residuals.png)
 
 | Visual Element | Meaning |
 |----------------|---------|
-| Coloured regions | Predicted class regions — smooth ensemble boundary |
-| White contour lines | Decision boundaries |
-| Coloured dots | Training samples per class |
+| Blue dots | Training samples |
+| Purple dots | Test samples |
+| Red step function | DT prediction — piecewise constant fit |
+| Green bars | Residuals $e_i = y_i - \hat{y}_i$ for test samples |
 
-Compared to a single tree, the forest boundary is smoother and generalises better to unseen data.
-
----
-
-## 8. Single Tree vs Forest
-
-![Single Tree vs Forest](02_single_vs_forest.png)
-
-Direct comparison of a single Decision Tree vs Random Forest on the same data:
-
-- **Single tree** — jagged, overfit boundary that closely follows training noise
-- **Random Forest** — smoother boundary that captures the true class structure
-
-The forest's boundary is the average of many imperfect trees — and their combined wisdom beats any individual.
+The characteristic **step function** shape distinguishes tree regressors from linear models — each horizontal segment is one leaf's constant prediction.
 
 ---
 
-## 9. Build Pipeline
+## 9. Variance Reduction Visualised
 
-![Build Pipeline](03_build_pipeline.png)
+![Variance Reduction](02_loss_surface.png)
 
-Five-step training loop — once per tree:
+**Left:** Variance Reduction plotted against all possible thresholds for feature 0. The amber dashed line marks the best split — the threshold that maximally reduces MSE.
+
+**Right:** Parent vs children MSE comparison at the best split. The weighted average of children MSE is always lower than parent MSE when Variance Reduction > 0.
+
+---
+
+## 10. Build Pipeline
+
+![Build Pipeline](03_gradient_derivation.png)
+
+Five-step recursive pipeline:
 
 | Step | Operation | Detail |
 |------|-----------|--------|
-| ① | Bootstrap sample | Draw $n$ rows with replacement |
-| ② | Random features | Sample $k = \lfloor\sqrt{p}\rfloor$ features at each split |
-| ③ | Build tree | Fit `DecisionTree` on bootstrap sample |
-| ④ | Store tree | Append to `self.trees_` |
-| ⑤ | Majority vote | At predict time — argmax over all tree votes |
+| ① | Check stopping | Too few samples? Max depth reached? |
+| ② | Find best split | Try every feature × threshold, compute VR |
+| ③ | Split data | Partition X and y into left and right subsets |
+| ④ | Recurse children | Call `_build_tree` on each subset |
+| ⑤ | Leaf prediction | `value = mean(y)` of samples in leaf |
 
 ---
 
-## 10. Predicted vs Actual
+## 11. Regression Diagnostics
 
-![Predicted vs Actual and Model Summary](04_predicted_vs_actual.png)
+After fitting, verify the four core assumptions visually:
 
-**Left panel:** correct predictions shown as coloured dots. Red ✗ markers show misclassified test samples.
+![Regression Diagnostics](04_diagnostics.png)
 
-**Right panel:** full model summary — n_estimators, max_depth, max_features, classes, n_features, accuracy.
+| Plot | What to look for | Assumption verified |
+|------|-----------------|---------------------|
+| **Residuals vs Fitted** | Random scatter around $y=0$ | Linearity |
+| **Normal Q-Q** | Points on the diagonal line | Normality of residuals |
+| **Scale-Location** | Flat, uniform band — no funnel | Homoscedasticity |
+| **Residual Histogram** | Bell-shaped, centred at 0 | Normality |
 
----
-
-## 11. Effect of n_estimators
-
-![Effect of n_estimators](05_n_estimators_effect.png)
-
-Accuracy plotted against number of trees:
-
-- Few trees → high variance — accuracy fluctuates
-- More trees → accuracy stabilises — law of large numbers
-- After ~50–100 trees, adding more trees gives diminishing returns
-- More trees never hurt accuracy — they only cost compute time
+**Red flags:**
+- Systematic steps in residuals → tree depth too shallow; increase `max_depth`
+- Funnel shape → variance grows with fitted value; try log($y$)
+- Heavy tails in Q-Q → outliers affecting splits; use `criterion='mae'`
 
 ---
 
-## 12. Feature Importance
+## 12. Predicted vs Actual
 
-![Feature Importance](06_feature_importance.png)
+![Predicted vs Actual and Model Summary](05_multivariate.png)
 
-Feature importance = average Gini reduction across all splits in all trees for that feature.
+**Left panel:** each point is one test sample — actual $y$ on x-axis, predicted $\hat{y}$ on y-axis.
+- Points hugging the **red dashed diagonal** = accurate predictions.
+- Vertical clusters reflect the piecewise constant nature of tree predictions.
 
-Features used in many high-gain splits → high importance.
-Features rarely used or used in low-gain splits → low importance.
-
-Useful for:
-- Understanding which features drive predictions
-- Feature selection — removing low-importance features
-- Debugging — unexpected importance rankings reveal data issues
+**Right panel:** full model summary — criterion, depth, split settings, node/leaf count, R², MSE, RMSE.
 
 ---
 
-## 13. Confusion Matrix & Metrics
+## 13. Effect of max_depth
 
-![Confusion Matrix and Per-Class Metrics](07_confusion_matrix.png)
+![Effect of max_depth](06_depth_effect.png)
 
-**Left — Confusion Matrix:** rows are true classes, columns are predicted.
+Four panels sweeping `max_depth` from 1 to None (fully grown):
 
-**Right — Per-Class Metrics:**
+| `max_depth` | Effect |
+|------------|--------|
+| `1` | One split — coarsest piecewise constant |
+| `3` | A few pieces — reasonable generalisation |
+| `5` | Good balance of fit and generalisation |
+| `None` | Fully grown — memorises training data, overfits |
 
-| Metric | Formula | Meaning |
-|--------|---------|---------|
-| Precision | $TP / (TP + FP)$ | Of all predicted as class $k$, how many were actually $k$ |
-| Recall | $TP / (TP + FN)$ | Of all true class $k$, how many were correctly identified |
-| F1 | $2 \cdot P \cdot R / (P + R)$ | Harmonic mean of precision and recall |
+Always choose `max_depth` via cross-validation — never leave it as `None` on noisy data.
 
 ---
 
-## 14. Usage
+## 14. Understanding R²
+
+$$R^2 = 1 - \frac{SS_{res}}{SS_{tot}} = 1 - \frac{\sum(y_i - \hat{y}_i)^2}{\sum(y_i - \bar{y})^2}$$
+
+![R² Explained](07_r2_explained.png)
+
+| Panel | Shows | Represents |
+|-------|-------|-----------|
+| Left — amber bars | Deviation from mean $\bar{y}$ | $SS_{tot}$ — total variance |
+| Right — green bars | Deviation from tree fit | $SS_{res}$ — unexplained variance |
+
+| $R^2$ value | Meaning |
+|------------|---------|
+| $= 1.0$ | Perfect fit — tree explains all variance |
+| $\approx 0.9$ | Strong fit — 90% of variance explained |
+| $= 0.0$ | No better than predicting $\bar{y}$ |
+| $< 0$ | Worse than the mean baseline |
+
+---
+
+## 15. Usage
 
 ### Basic fit and predict
 
 ```python
 import numpy as np
-from RandomForestClassifier import RandomForestClassifier
+from DecisionTreeRegressor import DecisionTreeRegressor
 
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
+X_train = np.array([[1],[2],[3],[4],[5],[6],[7],[8]], dtype=float)
+y_train = np.array([1.2, 2.8, 2.5, 5.1, 4.9, 7.3, 6.8, 9.0])
 
-X, y = load_iris(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-model = RandomForestClassifier(n_estimators=100, max_depth=5,
-                                max_features='sqrt', random_state=42)
+model = DecisionTreeRegressor(max_depth=3, criterion='mse')
 model.fit(X_train, y_train)
 
-print(f"Accuracy   : {model.score(X_test, y_test):.4f}")
-print(f"Classes    : {model.classes_}")
-print(f"n_trees    : {len(model.trees_)}")
+print(f"R²        : {model.score(X_train, y_train):.4f}")
+print(f"Root node : {model.root}")
 print(model)
 
-y_pred  = model.predict(X_test)
-y_proba = model.predict_proba(X_test)
-print(f"Proba[0]   : {y_proba[0]}")
+y_pred = model.predict(np.array([[5.5],[6.5]], dtype=float))
+print(f"Predictions: {y_pred}")
 ```
 
-### Comparing n_estimators
+### MAE criterion
 
 ```python
-for n in [1, 5, 10, 50, 100]:
-    m = RandomForestClassifier(n_estimators=n, max_depth=5, random_state=42)
-    m.fit(X_train, y_train)
-    print(f"n_estimators={n:4d}  Acc={m.score(X_test, y_test):.4f}")
+model = DecisionTreeRegressor(max_depth=4, criterion='mae')
+model.fit(X_train, y_train)
+print(f"MAE R² : {model.score(X_train, y_train):.4f}")
 ```
 
-### Comparing max_features
+### Comparing depths
 
 ```python
-for mf in ['sqrt', 'log2', 2, None]:
-    m = RandomForestClassifier(n_estimators=50, max_features=mf, random_state=42)
-    m.fit(X_train, y_train)
-    print(f"max_features={str(mf):6s}  Acc={m.score(X_test, y_test):.4f}")
+from sklearn.model_selection import train_test_split
+
+X_tr, X_te, y_tr, y_te = train_test_split(X_train, y_train,
+                                            test_size=0.2, random_state=42)
+for depth in [1, 2, 3, 5, None]:
+    m = DecisionTreeRegressor(max_depth=depth, criterion='mse')
+    m.fit(X_tr, y_tr)
+    print(f"depth={str(depth):4s}  R²={m.score(X_te, y_te):.4f}")
 ```
 
-### Single tree vs forest
+### Multi-feature example
 
 ```python
-from DecisionTreeClassifier import DecisionTreeClassifier
+from sklearn.datasets import load_diabetes
 
-dt = DecisionTreeClassifier(max_depth=5)
-rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+X, y = load_diabetes(return_X_y=True)
+X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
 
-dt.fit(X_train, y_train)
-rf.fit(X_train, y_train)
+model = DecisionTreeRegressor(max_depth=5, min_samples_split=5, criterion='mse')
+model.fit(X_tr, y_tr)
 
-print(f"Single Tree Acc : {dt.score(X_test, y_test):.4f}")
-print(f"Random Forest   : {rf.score(X_test, y_test):.4f}")
+print(f"R²          : {model.score(X_te, y_te):.4f}")
+print(f"n_features_ : {model.n_features_}")
+print(model)
 ```
 
 ---
 
-## 15. Assumptions
+## 16. Assumptions
 
 | # | Assumption | How to check |
 |---|-----------|--------------|
-| 1 | **No feature scaling needed** — tree splits are threshold-based | — |
-| 2 | **n_estimators** — more trees = more stable, never hurts | Plot accuracy vs n_estimators |
-| 3 | **max_depth** — shallow trees reduce overfitting per tree | Cross-validate |
-| 4 | **max_features** — `'sqrt'` is the standard default for classification | Try `'log2'` on high-dim data |
+| 1 | **No feature scaling needed** — splits are threshold-based | — |
+| 2 | **max_depth must be set** — unbounded trees overfit | Cross-validation |
+| 3 | **Piecewise constant output** — cannot extrapolate beyond training range | Decision boundary plot |
+| 4 | **Handles mixed types** — numeric and categorical features supported | Use dtype=object for categorical |
 
-> **No feature scaling required** — Random Forest inherits this from Decision Trees. Splits are based on thresholds so feature magnitude doesn't matter.
+> **Decision Trees do not require feature scaling** — unlike linear models, splits are based on thresholds so feature magnitude doesn't matter.
 
-> **Random state matters** — set `random_state` for reproducible results. Different seeds give slightly different forests but similar accuracy.
+> **Cannot extrapolate** — tree predictions are bounded by the range of training targets. For values outside the training range, the tree always predicts the mean of the closest leaf — unlike linear models which extrapolate.
 
 ---
 
-## Decision Tree vs Random Forest vs SVC
+## Decision Tree Regressor vs Linear Regression vs SVR
 
-| Criterion | Decision Tree | Random Forest | SVC |
-|-----------|--------------|--------------|-----|
-| Boundary shape | Axis-aligned rectangles | Smooth ensemble | Max-margin (kernel) |
-| Overfitting | High (deep trees) | Low (ensemble averaging) | Low (margin) |
+| Criterion | Decision Tree | Linear Regression | SVR |
+|-----------|--------------|-------------------|-----|
+| Prediction | Piecewise constant | Global linear | Smooth kernel fit |
+| Non-linear | Yes — rectangles | No | Yes — via kernels |
 | Feature scaling | Not needed | Not needed | Required |
-| Interpretability | Very high | Medium (feature importance) | Low |
-| Training speed | Fast | Slower (T trees) | Slow (SMO) |
-| Handles noise | Poorly | Well | Well |
-| Probabilistic output | No | Yes — vote fraction | No |
+| Extrapolation | No — bounded by training range | Yes | Partially |
+| Interpretability | Very high — rules | High — weights | Low — dual space |
+| Categorical features | Yes — natively | No | No |
+| Overfitting risk | High (deep trees) | Low | Low (with C/ε tuning) |
 
 ---
 
@@ -321,6 +358,7 @@ print(f"Random Forest   : {rf.score(X_test, y_test):.4f}")
 ```
 numpy >= 1.21
 matplotlib >= 3.4   # optional — for plots only
+scipy >= 1.7        # optional — for Q-Q diagnostics
 sklearn              # optional — for datasets only
 ```
 
