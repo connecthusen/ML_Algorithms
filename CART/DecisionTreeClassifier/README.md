@@ -31,9 +31,9 @@
 
 A Decision Tree recursively partitions the feature space into regions, assigning each region the majority class of training samples that fall within it.
 
-Given $n$ observations $(\mathbf{x}_1, y_1), \ldots, (\mathbf{x}_n, y_n)$, the tree learns a sequence of **if-else rules** on features:
+Given $n$ observations $(x_1, y_1), \ldots, (x_n, y_n)$, the tree learns a sequence of **if-else rules** on features:
 
-$$\hat{y} = \text{majority\_class}\!\left(\{y_i : \mathbf{x}_i \text{ falls in leaf region}\}\right)$$
+$$\hat{y} = \text{majority class}\!\left(\{y_i : x_i \text{ falls in leaf region}\}\right)$$
 
 | Symbol | Name | Meaning |
 |--------|------|---------|
@@ -103,7 +103,7 @@ $$H(y) = -\sum_{k=1}^{K} p_k \log_2 p_k$$
 
 At each node, the best split maximises the **Information Gain**:
 
-$$\text{IG}(y, \text{split}) = \text{Impurity}(y_\text{parent}) - \frac{|y_\text{left}|}{|y|}\,\text{Impurity}(y_\text{left}) - \frac{|y_\text{right}|}{|y|}\,\text{Impurity}(y_\text{right})$$
+$$\text{IG}(y, \text{split}) = \text{Impurity}(y_{\text{parent}}) - \frac{|y_{\text{left}}|}{|y|}\,\text{Impurity}(y_{\text{left}}) - \frac{|y_{\text{right}}|}{|y|}\,\text{Impurity}(y_{\text{right}})$$
 
 A split with $\text{IG} \leq 0$ is rejected — the node becomes a leaf with the majority class.
 
