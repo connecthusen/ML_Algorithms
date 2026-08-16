@@ -3,13 +3,14 @@ from collections import Counter
 
 
 class DecisionStump:
-    """Depth-1 decision tree — the classic AdaBoost weak learner."""
+    """Depth-1 decision tree — the classic AdaBoost weak learner, works for any number of classes."""
 
     def __init__(self):
-        self.feature   = None
-        self.threshold = None
-        self.polarity  = 1      # flips which side predicts +1
-        self.alpha     = None   # voting weight assigned after training
+        self.feature     = None
+        self.threshold   = None
+        self.left_value  = None   # predicted class if x[feature] <= threshold
+        self.right_value = None   # predicted class if x[feature] > threshold
+        self.alpha       = None   # voting weight assigned after training
 
     def fit(self, X, y, weights):
         n_samples, n_features = X.shape
@@ -17,32 +18,34 @@ class DecisionStump:
 
         for feature in range(n_features):
             for threshold in np.unique(X[:, feature]):
-                for polarity in (1, -1):
-                    pred = np.ones(n_samples)
-                    if polarity == 1:
-                        pred[X[:, feature] < threshold] = -1
-                    else:
-                        pred[X[:, feature] > threshold] = -1
+                left_mask  = X[:, feature] <= threshold
+                right_mask = ~left_mask
 
-                    error = np.sum(weights[pred != y])
+                left_value  = self._weighted_majority(y[left_mask],  weights[left_mask])
+                right_value = self._weighted_majority(y[right_mask], weights[right_mask])
 
-                    if error < best_error:
-                        best_error     = error
-                        self.feature   = feature
-                        self.threshold = threshold
-                        self.polarity  = polarity
+                pred  = np.where(left_mask, left_value, right_value)
+                error = np.sum(weights[pred != y])
+
+                if error < best_error:
+                    best_error       = error
+                    self.feature     = feature
+                    self.threshold   = threshold
+                    self.left_value  = left_value
+                    self.right_value = right_value
 
     def predict(self, X):
-        n_samples = X.shape[0]
-        pred      = np.ones(n_samples)
-        column    = X[:, self.feature]
+        column = X[:, self.feature]
+        return np.where(column <= self.threshold, self.left_value, self.right_value)
 
-        if self.polarity == 1:
-            pred[column < self.threshold] = -1
-        else:
-            pred[column > self.threshold] = -1
-
-        return pred
+    def _weighted_majority(self, y_subset, w_subset):
+        """Class with the highest total sample weight in this subset."""
+        if len(y_subset) == 0:
+            return 0
+        totals = {}
+        for label, weight in zip(y_subset, w_subset):
+            totals[label] = totals.get(label, 0.0) + weight
+        return max(totals, key=totals.get)
 
 
 class WeakDecisionTree:
@@ -65,7 +68,7 @@ class WeakDecisionTree:
         return np.array([self._traverse(x, self.root) for x in X])
 
     def _build(self, X, y, depth):
-        majority = 1 if np.sum(y == 1) >= np.sum(y == -1) else -1
+        majority = Counter(y).most_common(1)[0][0]
 
         if len(set(y)) == 1:
             return {'leaf': True, 'value': y[0]}
@@ -131,32 +134,31 @@ class WeakDecisionTree:
 
 class AdaBoostClassifier:
     """
-    AdaBoost — a weighted ensemble of weak learners, boosted one round at a time.
+    AdaBoost (SAMME) — a weighted ensemble of weak learners, boosted one round at a time.
+
+    Handles both binary and multi-class problems with the same algorithm — SAMME
+    is the standard multi-class generalisation of AdaBoost, and it reduces to
+    ordinary two-class AdaBoost automatically whenever there are only 2 classes.
 
     Each round trains one weak learner on re-weighted data, gives it a vote
     weight (alpha) based on its accuracy, then upweights the samples it got
-    wrong so the next round focuses on them. Final prediction is a weighted
-    majority vote: sign(sum(alpha_t * h_t(x))).
+    wrong so the next round focuses on them. Final prediction picks the class
+    with the highest total alpha across every round that voted for it.
 
     Parameters
     ----------
-    n_estimators        : int, default=50     — number of boosting rounds
-    weak_learner         : str, default='stump' — 'stump' or 'tree'
-    weak_learner_depth   : int, default=2      — max depth, tree learner only
-    criterion             : str, default='gini' — 'gini' or 'entropy', tree learner only
-    random_state          : int, default=None  — seed for reproducibility
+    n_estimators       : int, default=50     — number of boosting rounds
+    weak_learner        : str, default='stump' — 'stump' or 'tree'
+    weak_learner_depth  : int, default=2      — max depth, tree learner only
+    criterion            : str, default='gini' — 'gini' or 'entropy', tree learner only
+    random_state         : int, default=None  — seed for reproducibility
 
     Attributes
     ----------
-    stumps_  : list     — fitted weak learners, each carrying its own alpha
-    classes_ : ndarray (2,) — original binary class labels seen during fit
-    errors_  : list      — weighted error per boosting round
-    alphas_  : list      — voting weight per boosting round
-
-    Note
-    ----
-    AdaBoost only supports binary classification.
-    Labels are mapped to {-1, +1} internally and restored on predict.
+    stumps_  : list         — fitted weak learners, each carrying its own alpha
+    classes_ : ndarray (n_classes,) — original class labels seen during fit
+    errors_  : list          — weighted error per boosting round
+    alphas_  : list          — voting weight per boosting round
     """
 
     def __init__(self, n_estimators=50, weak_learner='stump',
@@ -176,23 +178,24 @@ class AdaBoostClassifier:
         """
         Input:
             X_train : (n_samples, n_features)
-            y_train : (n_samples,) — any binary labels
+            y_train : (n_samples,) — 2 or more classes
         """
-        X     = np.asarray(X_train, dtype=np.float64)
-        y_raw = np.asarray(y_train)
+        X = np.asarray(X_train, dtype=np.float64)
+        y = np.asarray(y_train)
 
         if X.ndim != 2:
             raise ValueError(f"X must be 2D, got shape {X.shape}")
-        if X.shape[0] != y_raw.shape[0]:
-            raise ValueError(f"X and y sample count mismatch: {X.shape[0]} vs {y_raw.shape[0]}")
-        if len(np.unique(y_raw)) != 2:
-            raise ValueError("AdaBoost only supports binary classification.")
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(f"X and y sample count mismatch: {X.shape[0]} vs {y.shape[0]}")
+
+        self.classes_ = np.unique(y)
+        n_classes     = len(self.classes_)
+
+        if n_classes < 2:
+            raise ValueError("AdaBoost needs at least 2 classes.")
 
         if self.random_state is not None:
             np.random.seed(self.random_state)
-
-        self.classes_ = np.unique(y_raw)
-        y = np.where(y_raw == self.classes_[0], -1, 1)   # map labels to {-1, +1}
 
         n_samples    = X.shape[0]
         weights      = np.full(n_samples, 1 / n_samples)   # every sample starts equally important
@@ -205,13 +208,15 @@ class AdaBoostClassifier:
             learner.fit(X, y, weights)
 
             predictions = learner.predict(X)
-            error       = np.sum(weights[predictions != y])
+            wrong       = predictions != y
+            error       = np.sum(weights[wrong])
             error       = np.clip(error, 1e-10, 1 - 1e-10)   # keep log() finite
 
-            alpha         = 0.5 * np.log((1 - error) / error)
+            # SAMME alpha — reduces to ordinary AdaBoost's alpha when n_classes == 2
+            alpha         = np.log((1 - error) / error) + np.log(n_classes - 1)
             learner.alpha = alpha
 
-            weights *= np.exp(-alpha * y * predictions)   # upweight misclassified samples
+            weights *= np.exp(alpha * wrong)   # upweight misclassified samples
             weights /= weights.sum()
 
             self.stumps_.append(learner)
@@ -232,11 +237,14 @@ class AdaBoostClassifier:
         if X.ndim != 2:
             raise ValueError(f"X must be 2D, got shape {X.shape}")
 
-        vote_sum = np.sum(
-            [learner.alpha * learner.predict(X) for learner in self.stumps_],
-            axis=0
-        )
-        return np.where(vote_sum >= 0, self.classes_[1], self.classes_[0])
+        # each round adds its alpha to whichever class it voted for
+        class_votes = np.zeros((X.shape[0], len(self.classes_)))
+        for learner in self.stumps_:
+            preds = learner.predict(X)
+            for i, cls in enumerate(self.classes_):
+                class_votes[:, i] += learner.alpha * (preds == cls)
+
+        return self.classes_[np.argmax(class_votes, axis=1)]
 
     def score(self, X_test, y_test):
         """Accuracy — fraction of correctly classified samples."""
