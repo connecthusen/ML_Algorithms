@@ -134,17 +134,6 @@ class WeakDecisionTree:
 
 class AdaBoostClassifier:
     """
-    AdaBoost (SAMME) — a weighted ensemble of weak learners, boosted one round at a time.
-
-    Handles both binary and multi-class problems with the same algorithm — SAMME
-    is the standard multi-class generalisation of AdaBoost, and it reduces to
-    ordinary two-class AdaBoost automatically whenever there are only 2 classes.
-
-    Each round trains one weak learner on re-weighted data, gives it a vote
-    weight (alpha) based on its accuracy, then upweights the samples it got
-    wrong so the next round focuses on them. Final prediction picks the class
-    with the highest total alpha across every round that voted for it.
-
     Parameters
     ----------
     n_estimators       : int, default=50     — number of boosting rounds
