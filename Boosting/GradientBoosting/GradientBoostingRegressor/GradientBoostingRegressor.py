@@ -96,12 +96,7 @@ class DecisionTree:
 
 class GradientBoostingRegressor:
     """
-    Gradient Boosting Regressor — fits trees to the residual errors of squared loss.
-
-    Starts from a single constant prediction (the target mean), then each
-    round trains a small tree on the current residuals and nudges the
-    overall prediction a little closer, scaled by the learning rate.
-
+    Gradient Boosting Regressor — fits trees to the residual errors of squared loss.s
     Parameters
     ----------
     n_estimators      : int,   default=100 — number of boosting rounds
