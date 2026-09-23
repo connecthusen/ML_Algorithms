@@ -223,7 +223,7 @@ class XGBoostClassifier:
                 f"  n_fitted={len(self.trees_)}\n"
                 f")")
 
-    # ── binary ────────────────────────────────────────────────────────────────
+    #  binary
 
     def _fit_binary(self, X, y_raw):
         # map labels to 0/1
